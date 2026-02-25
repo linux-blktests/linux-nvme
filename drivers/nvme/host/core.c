@@ -3966,6 +3966,7 @@ static int nvme_init_ns_head(struct nvme_ns *ns, struct nvme_ns_info *info)
 {
 	struct nvme_ctrl *ctrl = ns->ctrl;
 	struct nvme_ns_head *head = NULL;
+	bool retried = false;
 	int ret;
 
 	ret = nvme_global_check_duplicate_ids(ctrl->subsys, &info->ids);
@@ -4006,6 +4007,7 @@ static int nvme_init_ns_head(struct nvme_ns *ns, struct nvme_ns_info *info)
 		ctrl->quirks |= NVME_QUIRK_BOGUS_NID;
 	}
 
+again:
 	mutex_lock(&ctrl->subsys->lock);
 	head = nvme_find_ns_head(ctrl, info->nsid);
 	if (!head) {
@@ -4031,6 +4033,22 @@ static int nvme_init_ns_head(struct nvme_ns *ns, struct nvme_ns_info *info)
 			goto out_put_ns_head;
 		}
 		if (!nvme_ns_ids_equal(&head->ids, &info->ids)) {
+			/*
+			 * A newly created namespace can reuse an NSID that was
+			 * previously deleted. If the head has no active paths,
+			 * it is pending delayed removal and still occupying
+			 * this NSID in the subsystem list. Flush the removal
+			 * work to clear the stale head and retry.
+			 */
+			if (!retried && multipath && list_empty(&head->list)) {
+				mutex_unlock(&ctrl->subsys->lock);
+				nvme_mpath_flush_remove_work(head);
+				nvme_put_ns_head(head);
+				retried = true;
+				goto again;
+			}
+
+			WARN_ON_ONCE(list_empty(&head->list));
 			dev_err(ctrl->device,
 				"IDs don't match for shared namespace %d\n",
 					info->nsid);

@@ -1042,6 +1042,11 @@ void nvme_mpath_remove_disk(struct nvme_ns_head *head);
 void nvme_mpath_start_request(struct request *rq);
 void nvme_mpath_end_request(struct request *rq);
 
+static inline void nvme_mpath_flush_remove_work(struct nvme_ns_head *head)
+{
+	flush_delayed_work(&head->remove_work);
+}
+
 static inline void nvme_trace_bio_complete(struct request *req)
 {
 	struct nvme_ns *ns = req->q->queuedata;
@@ -1108,6 +1113,9 @@ static inline void nvme_mpath_clear_ctrl_paths(struct nvme_ctrl *ctrl)
 {
 }
 static inline void nvme_mpath_remove_disk(struct nvme_ns_head *head)
+{
+}
+static inline void nvme_mpath_flush_remove_work(struct nvme_ns_head *head)
 {
 }
 static inline void nvme_trace_bio_complete(struct request *req)
