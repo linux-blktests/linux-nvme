@@ -4260,8 +4260,10 @@ static void nvme_ns_remove(struct nvme_ns *ns)
 	mutex_unlock(&ns->ctrl->namespaces_lock);
 	synchronize_srcu(&ns->ctrl->srcu);
 
-	if (last_path)
+	if (last_path) {
 		nvme_mpath_remove_disk(ns->head);
+		set_bit(NVME_CTRL_SCAN_REMOVED_NS, &ns->ctrl->flags);
+	}
 	nvme_put_ns(ns);
 }
 
@@ -4527,6 +4529,21 @@ static void nvme_scan_work(struct work_struct *work)
 			nvme_scan_ns_sequential(ctrl);
 	}
 	mutex_unlock(&ctrl->scan_lock);
+
+	/*
+	 * If the scan removed the last path to a namespace, notify all
+	 * controllers in the subsystem to rescan. A controller that is
+	 * concurrently scanning may have missed the namespace due to the
+	 * stale head still occupying the NSID in the subsystem list.
+	 */
+	if (test_and_clear_bit(NVME_CTRL_SCAN_REMOVED_NS, &ctrl->flags)) {
+		struct nvme_ctrl *tmp;
+
+		mutex_lock(&ctrl->subsys->lock);
+		list_for_each_entry(tmp, &ctrl->subsys->ctrls, subsys_entry)
+			nvme_queue_scan(tmp);
+		mutex_unlock(&ctrl->subsys->lock);
+	}
 
 	/* Requeue if we have missed AENs */
 	if (test_bit(NVME_AER_NOTICE_NS_CHANGED, &ctrl->events))
