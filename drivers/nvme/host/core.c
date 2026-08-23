@@ -3277,6 +3277,10 @@ static bool nvme_validate_cntlid(struct nvme_subsystem *subsys,
 		if (nvme_state_terminal(tmp))
 			continue;
 
+		if ((ctrl->ops->flags & NVME_F_FABRICS) &&
+		    !nvmf_ctlr_matches_baseopts(tmp, ctrl->opts))
+			continue;
+
 		if (tmp->cntlid == ctrl->cntlid) {
 			dev_err(ctrl->device,
 				"Duplicate cntlid %u with %s, subsys %s, rejecting\n",
