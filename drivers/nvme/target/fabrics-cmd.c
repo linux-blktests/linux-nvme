@@ -364,7 +364,7 @@ static void nvmet_execute_io_connect(struct nvmet_req *req)
 	d->subsysnqn[NVMF_NQN_FIELD_LEN - 1] = '\0';
 	d->hostnqn[NVMF_NQN_FIELD_LEN - 1] = '\0';
 	ctrl = nvmet_ctrl_find_get(d->subsysnqn, d->hostnqn,
-				   le16_to_cpu(d->cntlid), req);
+				   le16_to_cpu(d->cntlid), &d->hostid, req);
 	if (!ctrl) {
 		status = NVME_SC_CONNECT_INVALID_PARAM | NVME_STATUS_DNR;
 		goto out;
