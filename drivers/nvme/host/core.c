@@ -4183,6 +4183,9 @@ static int nvme_init_ns_head(struct nvme_ns *ns, struct nvme_ns_info *info)
 
 	list_add_tail_rcu(&ns->siblings, &head->list);
 	ns->head = head;
+	ret = nvme_module_get(ns, head->nr_openers);
+	if (ret)
+		goto out_err_module_get;
 	mutex_unlock(&ctrl->subsys->lock);
 
 #ifdef CONFIG_NVME_MULTIPATH
@@ -4191,6 +4194,8 @@ static int nvme_init_ns_head(struct nvme_ns *ns, struct nvme_ns_info *info)
 #endif
 	return 0;
 
+out_err_module_get:
+	list_del_rcu(&ns->siblings);
 out_put_ns_head:
 	nvme_put_ns_head(head);
 out_unlock:
@@ -4383,6 +4388,7 @@ static void nvme_ns_remove(struct nvme_ns *ns)
 			list_del_init(&ns->head->entry);
 		last_path = true;
 	}
+	nvme_module_put(ns, ns->head->nr_openers);
 	mutex_unlock(&ns->ctrl->subsys->lock);
 
 	/* guarantee not available in head->list */
