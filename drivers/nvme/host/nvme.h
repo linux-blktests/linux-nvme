@@ -570,7 +570,8 @@ struct nvme_ns_head {
 
 	struct gendisk		*disk;
 
-	unsigned int		nr_openers;
+	unsigned int		nr_openers
+		__guarded_by(&subsys->lock);
 
 	u16			nr_plids;
 	u16			*plids;
