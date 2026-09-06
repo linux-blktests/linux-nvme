@@ -1636,6 +1636,19 @@ static void nvmet_tcp_release_queue_work(struct work_struct *w)
 	nvmet_tcp_restore_socket_callbacks(queue);
 	cancel_delayed_work_sync(&queue->tls_handshake_tmo_work);
 	cancel_work_sync(&queue->io_work);
+
+	/*
+	 * A command that has received all of its data and is only waiting
+	 * for the data digest sits in RECV_DDGST: need_data_in() is already
+	 * false, so nvmet_tcp_uninit_data_in_cmds() below skips it, yet it
+	 * still holds the reference from nvmet_req_init(). Drop it here,
+	 * while rcv_state still reflects it, so the SQ percpu_ref can drain
+	 * and nvmet_sq_destroy() can complete. INIT_FAILED took no ref.
+	 */
+	if (queue->rcv_state == NVMET_TCP_RECV_DDGST && queue->cmd &&
+	    !(queue->cmd->flags & NVMET_TCP_F_INIT_FAILED))
+		nvmet_req_uninit(&queue->cmd->req);
+
 	/* stop accepting incoming data */
 	queue->rcv_state = NVMET_TCP_RECV_ERR;
 
