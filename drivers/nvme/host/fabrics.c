@@ -712,11 +712,42 @@ static const match_table_t opt_tokens = {
 	{ NVMF_OPT_ERR,			NULL			}
 };
 
+static int nvmf_parse_string_option(substring_t *args, char **dst)
+{
+	char *value;
+
+	value = match_strdup(args);
+	if (!value)
+		return -ENOMEM;
+
+	kfree(*dst);
+	*dst = value;
+	return 0;
+}
+
+static int nvmf_parse_dhchap_secret(substring_t *args, char **secret)
+{
+	int ret;
+
+	ret = nvmf_parse_string_option(args, secret);
+	if (ret)
+		return ret;
+
+	if (strlen(*secret) < 11 || strncmp(*secret, "DHHC-1:", 7)) {
+		pr_err("Invalid DH-CHAP secret %s\n", *secret);
+		kfree_sensitive(*secret);
+		*secret = NULL;
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 		const char *buf)
 {
 	substring_t args[MAX_OPT_ARGS];
-	char *options, *o, *p;
+	char *options, *o, *option, *p;
 	int token, ret = 0;
 	size_t nqnlen  = 0;
 	int ctrl_loss_tmo = NVMF_DEF_CTRL_LOSS_TMO, key_id;
@@ -747,30 +778,22 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 	uuid_copy(&hostid, &nvmf_default_host->id);
 	strscpy(hostnqn, nvmf_default_host->nqn, NVMF_NQN_SIZE);
 
-	while ((p = strsep(&o, ",\n")) != NULL) {
-		if (!*p)
+	while ((option = strsep(&o, ",\n")) != NULL) {
+		if (!*option)
 			continue;
 
-		token = match_token(p, opt_tokens, args);
+		token = match_token(option, opt_tokens, args);
 		opts->mask |= token;
 		switch (token) {
 		case NVMF_OPT_TRANSPORT:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->transport);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->transport);
-			opts->transport = p;
 			break;
 		case NVMF_OPT_NQN:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->subsysnqn);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->subsysnqn);
-			opts->subsysnqn = p;
 			nqnlen = strlen(opts->subsysnqn);
 			if (nqnlen >= NVMF_NQN_SIZE) {
 				pr_err("%s needs to be < %d bytes\n",
@@ -783,22 +806,14 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 					 NVME_DISC_SUBSYS_NAME));
 			break;
 		case NVMF_OPT_TRADDR:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->traddr);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->traddr);
-			opts->traddr = p;
 			break;
 		case NVMF_OPT_TRSVCID:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->trsvcid);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->trsvcid);
-			opts->trsvcid = p;
 			break;
 		case NVMF_OPT_QUEUE_SIZE:
 			if (match_int(args, &token)) {
@@ -907,22 +922,14 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 			opts->reconnect_delay = token;
 			break;
 		case NVMF_OPT_HOST_TRADDR:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->host_traddr);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->host_traddr);
-			opts->host_traddr = p;
 			break;
 		case NVMF_OPT_HOST_IFACE:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_string_option(args, &opts->host_iface);
+			if (ret)
 				goto out;
-			}
-			kfree(opts->host_iface);
-			opts->host_iface = p;
 			break;
 		case NVMF_OPT_HOST_ID:
 			p = match_strdup(args);
@@ -1021,34 +1028,15 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 			opts->discovery_nqn = true;
 			break;
 		case NVMF_OPT_DHCHAP_SECRET:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_dhchap_secret(args, &opts->dhchap_secret);
+			if (ret)
 				goto out;
-			}
-			if (strlen(p) < 11 || strncmp(p, "DHHC-1:", 7)) {
-				pr_err("Invalid DH-CHAP secret %s\n", p);
-				kfree_sensitive(p);
-				ret = -EINVAL;
-				goto out;
-			}
-			kfree(opts->dhchap_secret);
-			opts->dhchap_secret = p;
 			break;
 		case NVMF_OPT_DHCHAP_CTRL_SECRET:
-			p = match_strdup(args);
-			if (!p) {
-				ret = -ENOMEM;
+			ret = nvmf_parse_dhchap_secret(args,
+						       &opts->dhchap_ctrl_secret);
+			if (ret)
 				goto out;
-			}
-			if (strlen(p) < 11 || strncmp(p, "DHHC-1:", 7)) {
-				pr_err("Invalid DH-CHAP secret %s\n", p);
-				kfree_sensitive(p);
-				ret = -EINVAL;
-				goto out;
-			}
-			kfree(opts->dhchap_ctrl_secret);
-			opts->dhchap_ctrl_secret = p;
 			break;
 		case NVMF_OPT_TLS:
 			if (!IS_ENABLED(CONFIG_NVME_TCP_TLS)) {
@@ -1068,7 +1056,7 @@ static int nvmf_parse_options(struct nvmf_ctrl_options *opts,
 			break;
 		default:
 			pr_warn("unknown parameter or missing value '%s' in ctrl creation request\n",
-				p);
+				option);
 			ret = -EINVAL;
 			goto out;
 		}
