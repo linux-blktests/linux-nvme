@@ -1476,6 +1476,7 @@ static void nvmet_init_cap(struct nvmet_ctrl *ctrl)
 
 struct nvmet_ctrl *nvmet_ctrl_find_get(const char *subsysnqn,
 				       const char *hostnqn, u16 cntlid,
+				       const uuid_t *hostid,
 				       struct nvmet_req *req)
 {
 	struct nvmet_ctrl *ctrl = NULL;
@@ -1494,6 +1495,17 @@ struct nvmet_ctrl *nvmet_ctrl_find_get(const char *subsysnqn,
 		if (ctrl->cntlid == cntlid) {
 			if (strncmp(hostnqn, ctrl->hostnqn, NVMF_NQN_SIZE)) {
 				pr_warn("hostnqn mismatch.\n");
+				continue;
+			}
+			/*
+			 * Also require the hostid from the connect data to
+			 * match the hostid the controller was created with.
+			 * Accept a nil hostid only if the controller was
+			 * created without one.
+			 */
+			if (!uuid_is_null(&ctrl->hostid) &&
+			    !uuid_equal(&ctrl->hostid, hostid)) {
+				pr_warn("hostid mismatch.\n");
 				continue;
 			}
 			if (!kref_get_unless_zero(&ctrl->ref))
