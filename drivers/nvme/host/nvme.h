@@ -570,6 +570,9 @@ struct nvme_ns_head {
 
 	struct gendisk		*disk;
 
+	unsigned int		nr_openers
+		__guarded_by(&subsys->lock);
+
 	u16			nr_plids;
 	u16			*plids;
 	u32			write_stream_granularity;
@@ -1111,6 +1114,28 @@ static inline bool nvme_mpath_queue_if_no_path(struct nvme_ns_head *head)
 		return true;
 	return false;
 }
+
+static inline int nvme_module_get(struct nvme_ns *ns, unsigned int count)
+{
+	unsigned int i;
+
+	for (i = 0; i < count; i++) {
+		if (!try_module_get(ns->ctrl->ops->module))
+			goto out_unwind;
+	}
+
+	return 0;
+out_unwind:
+	while (i--)
+		module_put(ns->ctrl->ops->module);
+	return -ENXIO;
+}
+
+static inline void nvme_module_put(struct nvme_ns *ns, unsigned int count)
+{
+	while (count--)
+		module_put(ns->ctrl->ops->module);
+}
 #else
 #define multipath false
 static inline bool nvme_ctrl_use_ana(struct nvme_ctrl *ctrl)
@@ -1201,6 +1226,14 @@ static inline bool nvme_disk_is_ns_head(struct gendisk *disk)
 static inline bool nvme_mpath_queue_if_no_path(struct nvme_ns_head *head)
 {
 	return false;
+}
+static inline int nvme_module_get(struct nvme_ns *ns, unsigned int count)
+{
+	return 0;
+}
+static inline void nvme_module_put(struct nvme_ns *ns, unsigned int count)
+{
+
 }
 #endif /* CONFIG_NVME_MULTIPATH */
 

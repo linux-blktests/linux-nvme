@@ -579,14 +579,47 @@ static void nvme_ns_head_submit_bio(struct bio *bio)
 
 static int nvme_ns_head_open(struct gendisk *disk, blk_mode_t mode)
 {
-	if (!nvme_tryget_ns_head(disk->private_data))
+	struct nvme_ns_head *head = disk->private_data;
+	struct nvme_subsystem *subsys = head->subsys;
+	struct nvme_ns *ns;
+	int ret;
+
+	if (!nvme_tryget_ns_head(head))
 		return -ENXIO;
+
+	mutex_lock(&subsys->lock);
+	list_for_each_entry(ns, &head->list, siblings) {
+		ret = nvme_module_get(ns, 1);
+		if (ret)
+			goto out_unwind;
+	}
+	head->nr_openers++;
+	mutex_unlock(&subsys->lock);
+
 	return 0;
+
+out_unwind:
+	list_for_each_entry_continue_reverse(ns, &head->list, siblings)
+		nvme_module_put(ns, 1);
+	mutex_unlock(&subsys->lock);
+
+	nvme_put_ns_head(head);
+	return ret;
 }
 
 static void nvme_ns_head_release(struct gendisk *disk)
 {
-	nvme_put_ns_head(disk->private_data);
+	struct nvme_ns_head *head = disk->private_data;
+	struct nvme_subsystem *subsys = head->subsys;
+	struct nvme_ns *ns;
+
+	mutex_lock(&subsys->lock);
+	list_for_each_entry(ns, &head->list, siblings)
+		nvme_module_put(ns, 1);
+	head->nr_openers--;
+	mutex_unlock(&subsys->lock);
+
+	nvme_put_ns_head(head);
 }
 
 static int nvme_ns_head_get_unique_id(struct gendisk *disk, u8 id[16],
