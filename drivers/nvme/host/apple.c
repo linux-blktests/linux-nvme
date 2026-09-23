@@ -207,7 +207,6 @@ struct apple_nvme {
 	mempool_t *iod_mempool;
 
 	struct nvme_ctrl ctrl;
-	struct work_struct remove_work;
 
 	struct apple_nvme_queue adminq;
 	struct apple_nvme_queue ioq;
@@ -1226,20 +1225,9 @@ out_remove_cq:
 out:
 	dev_warn(anv->ctrl.device, "Reset failure status: %d\n", ret);
 	nvme_change_ctrl_state(&anv->ctrl, NVME_CTRL_DELETING);
-	nvme_get_ctrl(&anv->ctrl);
-	apple_nvme_disable(anv, false);
+	apple_nvme_disable(anv, true);
 	nvme_mark_namespaces_dead(&anv->ctrl);
-	if (!queue_work(nvme_wq, &anv->remove_work))
-		nvme_put_ctrl(&anv->ctrl);
-}
-
-static void apple_nvme_remove_dead_ctrl_work(struct work_struct *work)
-{
-	struct apple_nvme *anv =
-		container_of(work, struct apple_nvme, remove_work);
-
-	nvme_put_ctrl(&anv->ctrl);
-	device_release_driver(anv->dev);
+	nvme_change_ctrl_state(&anv->ctrl, NVME_CTRL_DEAD);
 }
 
 static int apple_nvme_reg_read32(struct nvme_ctrl *ctrl, u32 off, u32 *val)
@@ -1528,7 +1516,6 @@ static struct apple_nvme *apple_nvme_alloc(struct platform_device *pdev)
 	}
 
 	INIT_WORK(&anv->ctrl.reset_work, apple_nvme_reset_work);
-	INIT_WORK(&anv->remove_work, apple_nvme_remove_dead_ctrl_work);
 	spin_lock_init(&anv->lock);
 
 	ret = apple_nvme_queue_alloc(anv, &anv->adminq);
