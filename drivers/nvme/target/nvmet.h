@@ -320,6 +320,11 @@ struct nvmet_ctrl {
 };
 
 struct nvmet_passthru {
+	struct percpu_ref	ref;
+	struct completion	disable_done;
+#define NVMET_PASSTHRU_ENABLED	0
+	unsigned long		flags;
+
 	struct nvme_ctrl	*ctrl;
 	char			*ctrl_path;
 	struct config_group	group;
@@ -478,6 +483,7 @@ struct nvmet_req {
 			struct request		*rq;
 			struct work_struct      work;
 			bool			use_workqueue;
+			bool			ref_held;
 		} p;
 #ifdef CONFIG_BLK_DEV_ZONED
 		struct {
@@ -799,6 +805,16 @@ static inline bool nvmet_is_passthru_subsys(struct nvmet_subsys *subsys)
 {
 	return subsys->passthru.ctrl;
 }
+
+static inline bool nvmet_get_passthru_ref(struct nvmet_req *req)
+{
+	return percpu_ref_tryget_live(&nvmet_req_subsys(req)->passthru.ref);
+}
+
+static inline void nvmet_put_passthru_ref(struct nvmet_req *req)
+{
+	percpu_ref_put(&nvmet_req_subsys(req)->passthru.ref);
+}
 #else /* CONFIG_NVME_TARGET_PASSTHRU */
 static inline void nvmet_passthru_subsys_free(struct nvmet_subsys *subsys)
 {
@@ -817,6 +833,13 @@ static inline u16 nvmet_parse_passthru_io_cmd(struct nvmet_req *req)
 static inline bool nvmet_is_passthru_subsys(struct nvmet_subsys *subsys)
 {
 	return NULL;
+}
+static inline bool nvmet_get_passthru_ref(struct nvmet_req *req)
+{
+	return NULL;
+}
+static inline void nvmet_put_passthru_ref(struct nvmet_req *req)
+{
 }
 #endif /* CONFIG_NVME_TARGET_PASSTHRU */
 

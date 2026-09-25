@@ -305,15 +305,25 @@ out_bio_put:
 
 static void nvmet_passthru_execute_cmd(struct nvmet_req *req)
 {
-	struct nvmet_passthru *passthru = &nvmet_req_subsys(req)->passthru;
-	struct nvme_ctrl *ctrl = passthru->ctrl;
-	struct request_queue *q = ctrl->admin_q;
+	struct nvmet_passthru *passthru;
+	struct nvme_ctrl *ctrl;
+	struct request_queue *q;
 	struct nvme_ns *ns = NULL;
 	struct request *rq = NULL;
 	unsigned int timeout;
 	u32 effects;
 	u16 status;
 	int ret;
+
+	req->p.ref_held = nvmet_get_passthru_ref(req);
+	if (!req->p.ref_held) {
+		status = NVME_SC_INTERNAL | NVME_STATUS_DNR;
+		goto out;
+	}
+
+	passthru = &nvmet_req_subsys(req)->passthru;
+	ctrl = passthru->ctrl;
+	q = ctrl->admin_q;
 
 	if (likely(req->sq->qid != 0)) {
 		u32 nsid = le32_to_cpu(req->cmd->common.nsid);
@@ -387,10 +397,17 @@ out:
  */
 static void nvmet_passthru_set_host_behaviour(struct nvmet_req *req)
 {
-	struct nvme_ctrl *ctrl = nvmet_req_subsys(req)->passthru.ctrl;
+	struct nvme_ctrl *ctrl;
 	struct nvme_feat_host_behavior *host;
 	u16 status = NVME_SC_INTERNAL;
 	int ret;
+
+	req->p.ref_held = nvmet_get_passthru_ref(req);
+	if (!req->p.ref_held) {
+		status |= NVME_STATUS_DNR;
+		goto out_complete_req;
+	}
+	ctrl = nvmet_req_subsys(req)->passthru.ctrl;
 
 	host = kzalloc(sizeof(*host) * 2, GFP_KERNEL);
 	if (!host)
@@ -585,6 +602,14 @@ u16 nvmet_parse_passthru_admin_cmd(struct nvmet_req *req)
 	}
 }
 
+static void nvmet_release_passthru_ctrl(struct percpu_ref *ref)
+{
+	struct nvmet_passthru *passthru = container_of(ref,
+				struct nvmet_passthru, ref);
+
+	complete(&passthru->disable_done);
+}
+
 int nvmet_passthru_ctrl_enable(struct nvmet_subsys *subsys)
 {
 	struct nvmet_passthru *passthru = &subsys->passthru;
@@ -628,9 +653,15 @@ int nvmet_passthru_ctrl_enable(struct nvmet_subsys *subsys)
 	if (old)
 		goto out_put_file;
 
+	ret = percpu_ref_init(&passthru->ref, nvmet_release_passthru_ctrl,
+			0, GFP_KERNEL);
+	if (ret) {
+		xa_erase(&passthru_subsystems, ctrl->instance);
+		goto out_put_file;
+	}
+	init_completion(&passthru->disable_done);
 	passthru->ctrl = ctrl;
 	subsys->ver = ctrl->vs;
-
 	if (subsys->ver < NVME_VS(1, 2, 1)) {
 		pr_warn("nvme controller version is too old: %llu.%llu.%llu, advertising 1.2.1\n",
 			NVME_MAJOR(subsys->ver), NVME_MINOR(subsys->ver),
@@ -639,6 +670,7 @@ int nvmet_passthru_ctrl_enable(struct nvmet_subsys *subsys)
 	}
 	nvme_get_ctrl(ctrl);
 	__module_get(passthru->ctrl->ops->module);
+	set_bit(NVMET_PASSTHRU_ENABLED, &passthru->flags);
 	ret = 0;
 
 out_put_file:
@@ -652,11 +684,17 @@ static void __nvmet_passthru_ctrl_disable(struct nvmet_subsys *subsys)
 {
 	struct nvmet_passthru *passthru = &subsys->passthru;
 
-	if (passthru->ctrl) {
-		xa_erase(&passthru_subsystems, passthru->ctrl->instance);
-		module_put(passthru->ctrl->ops->module);
-		nvme_put_ctrl(passthru->ctrl);
-	}
+	if (!test_and_clear_bit(NVMET_PASSTHRU_ENABLED, &passthru->flags))
+		return;
+
+	percpu_ref_kill(&passthru->ref);
+	wait_for_completion(&passthru->disable_done);
+	percpu_ref_exit(&passthru->ref);
+
+	xa_erase(&passthru_subsystems, passthru->ctrl->instance);
+	module_put(passthru->ctrl->ops->module);
+	nvme_put_ctrl(passthru->ctrl);
+
 	passthru->ctrl = NULL;
 	subsys->ver = NVMET_DEFAULT_VS;
 }
