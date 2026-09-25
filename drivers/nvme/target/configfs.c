@@ -904,22 +904,23 @@ static const struct config_item_type nvmet_namespaces_type = {
 static ssize_t nvmet_passthru_device_path_show(struct config_item *item,
 		char *page)
 {
-	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
 
-	return snprintf(page, PAGE_SIZE, "%s\n", subsys->passthru_ctrl_path);
+	return snprintf(page, PAGE_SIZE, "%s\n", passthru->ctrl_path);
 }
 
 static ssize_t nvmet_passthru_device_path_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &subsys->passthru;
 	size_t len;
 	int ret;
 
 	mutex_lock(&subsys->lock);
 
 	ret = -EBUSY;
-	if (subsys->passthru_ctrl)
+	if (passthru->ctrl)
 		goto out_unlock;
 
 	ret = -EINVAL;
@@ -927,10 +928,10 @@ static ssize_t nvmet_passthru_device_path_store(struct config_item *item,
 	if (!len)
 		goto out_unlock;
 
-	kfree(subsys->passthru_ctrl_path);
+	kfree(passthru->ctrl_path);
 	ret = -ENOMEM;
-	subsys->passthru_ctrl_path = kstrndup(page, len, GFP_KERNEL);
-	if (!subsys->passthru_ctrl_path)
+	passthru->ctrl_path = kstrndup(page, len, GFP_KERNEL);
+	if (!passthru->ctrl_path)
 		goto out_unlock;
 
 	mutex_unlock(&subsys->lock);
@@ -945,9 +946,9 @@ CONFIGFS_ATTR(nvmet_passthru_, device_path);
 static ssize_t nvmet_passthru_enable_show(struct config_item *item,
 		char *page)
 {
-	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
 
-	return sprintf(page, "%d\n", subsys->passthru_ctrl ? 1 : 0);
+	return sprintf(page, "%d\n", passthru->ctrl ? 1 : 0);
 }
 
 static ssize_t nvmet_passthru_enable_store(struct config_item *item,
@@ -972,18 +973,20 @@ CONFIGFS_ATTR(nvmet_passthru_, enable);
 static ssize_t nvmet_passthru_admin_timeout_show(struct config_item *item,
 		char *page)
 {
-	return sprintf(page, "%u\n", to_subsys(item->ci_parent)->admin_timeout);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
+
+	return sprintf(page, "%u\n", passthru->admin_timeout);
 }
 
 static ssize_t nvmet_passthru_admin_timeout_store(struct config_item *item,
 		const char *page, size_t count)
 {
-	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
 	unsigned int timeout;
 
 	if (kstrtouint(page, 0, &timeout))
 		return -EINVAL;
-	subsys->admin_timeout = timeout;
+	passthru->admin_timeout = timeout;
 	return count;
 }
 CONFIGFS_ATTR(nvmet_passthru_, admin_timeout);
@@ -991,18 +994,20 @@ CONFIGFS_ATTR(nvmet_passthru_, admin_timeout);
 static ssize_t nvmet_passthru_io_timeout_show(struct config_item *item,
 		char *page)
 {
-	return sprintf(page, "%u\n", to_subsys(item->ci_parent)->io_timeout);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
+
+	return sprintf(page, "%u\n", passthru->io_timeout);
 }
 
 static ssize_t nvmet_passthru_io_timeout_store(struct config_item *item,
 		const char *page, size_t count)
 {
-	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
 	unsigned int timeout;
 
 	if (kstrtouint(page, 0, &timeout))
 		return -EINVAL;
-	subsys->io_timeout = timeout;
+	passthru->io_timeout = timeout;
 	return count;
 }
 CONFIGFS_ATTR(nvmet_passthru_, io_timeout);
@@ -1010,18 +1015,20 @@ CONFIGFS_ATTR(nvmet_passthru_, io_timeout);
 static ssize_t nvmet_passthru_clear_ids_show(struct config_item *item,
 		char *page)
 {
-	return sprintf(page, "%u\n", to_subsys(item->ci_parent)->clear_ids);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
+
+	return sprintf(page, "%u\n", passthru->clear_ids);
 }
 
 static ssize_t nvmet_passthru_clear_ids_store(struct config_item *item,
 		const char *page, size_t count)
 {
-	struct nvmet_subsys *subsys = to_subsys(item->ci_parent);
+	struct nvmet_passthru *passthru = &to_subsys(item->ci_parent)->passthru;
 	unsigned int clear_ids;
 
 	if (kstrtouint(page, 0, &clear_ids))
 		return -EINVAL;
-	subsys->clear_ids = clear_ids;
+	passthru->clear_ids = clear_ids;
 	return count;
 }
 CONFIGFS_ATTR(nvmet_passthru_, clear_ids);
@@ -1042,9 +1049,9 @@ static const struct config_item_type nvmet_passthru_type = {
 
 static void nvmet_add_passthru_group(struct nvmet_subsys *subsys)
 {
-	config_group_init_type_name(&subsys->passthru_group,
+	config_group_init_type_name(&subsys->passthru.group,
 				    "passthru", &nvmet_passthru_type);
-	configfs_add_default_group(&subsys->passthru_group,
+	configfs_add_default_group(&subsys->passthru.group,
 				   &subsys->group);
 }
 
