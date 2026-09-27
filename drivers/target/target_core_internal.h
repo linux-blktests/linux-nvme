@@ -4,6 +4,7 @@
 
 #include <linux/configfs.h>
 #include <linux/list.h>
+#include <linux/mutex.h>
 #include <linux/types.h>
 #include <target/target_core_base.h>
 
@@ -171,6 +172,10 @@ extern struct se_portal_group xcopy_pt_tpg;
 #define	DB_ROOT_DEFAULT		"/var/target"
 #define	DB_ROOT_PREFERRED	"/etc/target"
 
+struct path;
+
 extern char db_root[];
+extern struct path db_root_path;
+extern struct mutex db_root_lock;
 
 #endif /* TARGET_CORE_INTERNAL_H */

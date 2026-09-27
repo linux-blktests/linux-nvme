@@ -18,7 +18,6 @@
 #include <linux/file.h>
 #include <linux/fcntl.h>
 #include <linux/fs.h>
-#include <linux/fs_struct.h>
 #include <scsi/scsi_proto.h>
 #include <linux/unaligned.h>
 
@@ -1965,16 +1964,22 @@ static int __core_scsi3_write_aptpl_to_file(
 	int ret;
 	loff_t pos = 0;
 
-	path = kasprintf(GFP_KERNEL, "%s/pr/aptpl_%s", db_root,
-			&wwn->unit_serial[0]);
+	path = kasprintf(GFP_KERNEL, "pr/aptpl_%s", &wwn->unit_serial[0]);
 	if (!path)
 		return -ENOMEM;
 
-	scoped_with_init_fs()
-		file = filp_open(path, flags, 0600);
+	mutex_lock(&db_root_lock);
+	if (!db_root_path.dentry) {
+		mutex_unlock(&db_root_lock);
+		pr_err("db_root is not initialized for APTPL metadata path: %s\n",
+		       path);
+		kfree(path);
+		return -ENODEV;
+	}
+	file = configfs_open_root(&db_root_path, path, flags, 0600);
+	mutex_unlock(&db_root_lock);
 	if (IS_ERR(file)) {
-		pr_err("filp_open(%s) for APTPL metadata"
-			" failed\n", path);
+		pr_err("configfs_open_root(%s) for APTPL metadata failed\n", path);
 		kfree(path);
 		return PTR_ERR(file);
 	}
