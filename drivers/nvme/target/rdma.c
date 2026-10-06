@@ -104,6 +104,7 @@ struct nvmet_rdma_queue {
 	struct nvmet_rdma_cmd	*cmds;
 
 	struct work_struct	release_work;
+	struct work_struct	establish_work;
 	struct list_head	rsp_wait_list;
 	struct list_head	rsp_wr_wait_list;
 	spinlock_t		rsp_wr_wait_lock;
@@ -170,6 +171,7 @@ static void nvmet_rdma_read_data_done(struct ib_cq *cq, struct ib_wc *wc);
 static void nvmet_rdma_write_data_done(struct ib_cq *cq, struct ib_wc *wc);
 static void nvmet_rdma_qp_event(struct ib_event *event, void *priv);
 static void nvmet_rdma_queue_disconnect(struct nvmet_rdma_queue *queue);
+static void nvmet_rdma_establish_queue_work(struct work_struct *work);
 static void nvmet_rdma_free_rsp(struct nvmet_rdma_device *ndev,
 				struct nvmet_rdma_rsp *r);
 static int nvmet_rdma_alloc_rsp(struct nvmet_rdma_device *ndev,
@@ -1380,6 +1382,7 @@ static void nvmet_rdma_free_queue(struct nvmet_rdma_queue *queue)
 {
 	pr_debug("freeing queue %d\n", queue->idx);
 
+	cancel_work_sync(&queue->establish_work);
 	nvmet_sq_destroy(&queue->nvme_sq);
 	nvmet_cq_put(&queue->nvme_cq);
 
@@ -1481,6 +1484,7 @@ nvmet_rdma_alloc_queue(struct nvmet_rdma_device *ndev,
 	 * inside a CM callback would trigger a deadlock. (great API design..)
 	 */
 	INIT_WORK(&queue->release_work, nvmet_rdma_release_queue_work);
+	INIT_WORK(&queue->establish_work, nvmet_rdma_establish_queue_work);
 	queue->dev = ndev;
 	queue->cm_id = cm_id;
 	queue->port = port->nport;
@@ -1658,18 +1662,20 @@ put_device:
 	return ret;
 }
 
-static void nvmet_rdma_queue_established(struct nvmet_rdma_queue *queue)
+/*
+ * Execute the commands which were received before the queue became LIVE and
+ * then move the queue to the LIVE state.
+ */
+static void nvmet_rdma_establish_queue_work(struct work_struct *work)
 {
+	struct nvmet_rdma_queue *queue =
+		container_of(work, struct nvmet_rdma_queue, establish_work);
 	unsigned long flags;
 
 	spin_lock_irqsave(&queue->state_lock, flags);
-	if (queue->state != NVMET_RDMA_Q_CONNECTING) {
-		pr_warn("trying to establish a connected queue\n");
-		goto out_unlock;
-	}
-	queue->state = NVMET_RDMA_Q_LIVE;
 
-	while (!list_empty(&queue->rsp_wait_list)) {
+	while (queue->state == NVMET_RDMA_Q_CONNECTING &&
+	       !list_empty(&queue->rsp_wait_list)) {
 		struct nvmet_rdma_rsp *cmd;
 
 		cmd = list_first_entry(&queue->rsp_wait_list,
@@ -1680,6 +1686,28 @@ static void nvmet_rdma_queue_established(struct nvmet_rdma_queue *queue)
 		nvmet_rdma_handle_command(queue, cmd);
 		spin_lock_irqsave(&queue->state_lock, flags);
 	}
+
+	if (queue->state == NVMET_RDMA_Q_CONNECTING)
+		queue->state = NVMET_RDMA_Q_LIVE;
+
+	spin_unlock_irqrestore(&queue->state_lock, flags);
+}
+
+static void nvmet_rdma_queue_established(struct nvmet_rdma_queue *queue)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&queue->state_lock, flags);
+	if (queue->state != NVMET_RDMA_Q_CONNECTING) {
+		pr_warn("trying to establish a connected queue\n");
+		goto out_unlock;
+	}
+
+	/*
+	 * Defer the command execution and the transition to the LIVE state to
+	 * nvmet_wq. This avoids acquiring nvmet locks here.
+	 */
+	queue_work(nvmet_wq, &queue->establish_work);
 
 out_unlock:
 	spin_unlock_irqrestore(&queue->state_lock, flags);
