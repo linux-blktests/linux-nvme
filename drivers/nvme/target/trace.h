@@ -131,6 +131,29 @@ TRACE_EVENT(nvmet_req_complete,
 
 );
 
+TRACE_EVENT(nvmet_fdp_write_translate,
+	TP_PROTO(struct nvmet_req *req, u16 pid, u8 stream),
+	TP_ARGS(req, pid, stream),
+	TP_STRUCT__entry(
+		__field(u16, ctrl_id)
+		__array(char, disk, DISK_NAME_LEN)
+		__field(u32, nsid)
+		__field(u16, pid)
+		__field(u8, stream)
+	),
+	TP_fast_assign(
+		__entry->ctrl_id = nvmet_req_to_ctrl_id(req);
+		__assign_req_name(__entry->disk, req);
+		__entry->nsid = req->ns->nsid;
+		__entry->pid = pid;
+		__entry->stream = stream;
+	),
+	TP_printk("nvmet%s: %snsid=%u, pid=%u, write_stream=%u",
+		__print_ctrl_id(__entry->ctrl_id),
+		__print_disk_name(__entry->disk),
+		__entry->nsid, __entry->pid, __entry->stream)
+);
+
 #define aer_name(aer) { aer, #aer }
 
 TRACE_EVENT(nvmet_async_event,
