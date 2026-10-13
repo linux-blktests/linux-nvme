@@ -62,6 +62,9 @@ struct nvmet_fc_ls_req_op {		/* for an LS RQST XMT */
 /* desired maximum for a single sequence - if sg list allows it */
 #define NVMET_FC_MAX_SEQ_LENGTH		(256 * 1024)
 
+/* maximum data transfer length a host may declare in an FCP CMD IU */
+#define NVMET_FC_MAX_XFR_LENGTH		(16 * 1024 * 1024)
+
 enum nvmet_fcp_datadir {
 	NVMET_FCP_NODATA,
 	NVMET_FCP_WRITE,
@@ -2576,7 +2579,16 @@ nvmet_fc_handle_fcp_rqst(struct nvmet_fc_tgtport *tgtport,
 	/* keep a running counter of tail position */
 	atomic_inc(&fod->queue->sqtail);
 
+	fod->offset = 0;
+
 	if (fod->req.transfer_len) {
+		if (fod->req.transfer_len > NVMET_FC_MAX_XFR_LENGTH) {
+			nvmet_req_complete(&fod->req,
+					   NVME_SC_SGL_INVALID_DATA |
+					   NVME_STATUS_DNR);
+			return;
+		}
+
 		ret = nvmet_fc_alloc_tgt_pgs(fod);
 		if (ret) {
 			nvmet_req_complete(&fod->req, ret);
@@ -2585,7 +2597,6 @@ nvmet_fc_handle_fcp_rqst(struct nvmet_fc_tgtport *tgtport,
 	}
 	fod->req.sg = fod->data_sg;
 	fod->req.sg_cnt = fod->data_sg_cnt;
-	fod->offset = 0;
 
 	if (fod->io_dir == NVMET_FCP_WRITE) {
 		/* pull the data over before invoking nvmet layer */
@@ -2988,6 +2999,14 @@ out_put:
 	return ret;
 }
 
+static u8
+nvmet_fc_get_mdts(const struct nvmet_ctrl *ctrl)
+{
+	int page_shift = NVME_CAP_MPSMIN(ctrl->cap) + 12;
+
+	return ilog2(NVMET_FC_MAX_XFR_LENGTH) - page_shift;
+}
+
 static const struct nvmet_fabrics_ops nvmet_fc_tgt_fcp_ops = {
 	.owner			= THIS_MODULE,
 	.type			= NVMF_TRTYPE_FC,
@@ -2998,6 +3017,7 @@ static const struct nvmet_fabrics_ops nvmet_fc_tgt_fcp_ops = {
 	.delete_ctrl		= nvmet_fc_delete_ctrl,
 	.discovery_chg		= nvmet_fc_discovery_chg,
 	.host_traddr		= nvmet_fc_host_traddr,
+	.get_mdts		= nvmet_fc_get_mdts,
 };
 
 static int __init nvmet_fc_init_module(void)
