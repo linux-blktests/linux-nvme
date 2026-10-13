@@ -162,6 +162,11 @@ static void pci_irq_mask_msix(struct irq_data *data)
 	pci_msix_mask(irq_data_get_msi_desc(data));
 }
 
+static void pci_irq_mask_nowait_msix(struct irq_data *data)
+{
+	pci_msix_mask_nowait(irq_data_get_msi_desc(data));
+}
+
 static void pci_irq_unmask_msix(struct irq_data *data)
 {
 	pci_msix_unmask(irq_data_get_msi_desc(data));
@@ -182,6 +187,7 @@ static const struct msi_domain_template pci_msix_template = {
 		.irq_startup		= pci_irq_startup_msix,
 		.irq_shutdown		= pci_irq_shutdown_msix,
 		.irq_mask		= pci_irq_mask_msix,
+		.irq_mask_nowait	= pci_irq_mask_nowait_msix,
 		.irq_unmask		= pci_irq_unmask_msix,
 		.irq_write_msi_msg	= pci_msi_domain_write_msg,
 		.flags			= IRQCHIP_ONESHOT_SAFE,

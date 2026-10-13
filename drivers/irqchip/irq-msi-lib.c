@@ -126,6 +126,7 @@ bool msi_lib_init_dev_msi_info(struct device *dev, struct irq_domain *domain,
 	 */
 	if (info->flags & MSI_FLAG_PCI_MSI_MASK_PARENT) {
 		chip->irq_mask		= irq_chip_mask_parent;
+		chip->irq_mask_nowait	= NULL;
 		chip->irq_unmask	= irq_chip_unmask_parent;
 	}
 
