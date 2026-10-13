@@ -161,6 +161,32 @@ TRACE_EVENT(nvme_sq,
 	)
 );
 
+TRACE_EVENT(nvme_dim,
+	TP_PROTO(u16 qid, int cpms, int epms, int cpe_ratio, u8 profile,
+		 unsigned int sleep_us),
+	TP_ARGS(qid, cpms, epms, cpe_ratio, profile, sleep_us),
+	TP_STRUCT__entry(
+		__field(u16, qid)
+		__field(int, cpms)
+		__field(int, epms)
+		__field(int, cpe_ratio)
+		__field(u8, profile)
+		__field(unsigned int, sleep_us)
+	),
+	TP_fast_assign(
+		__entry->qid = qid;
+		__entry->cpms = cpms;
+		__entry->epms = epms;
+		__entry->cpe_ratio = cpe_ratio;
+		__entry->profile = profile;
+		__entry->sleep_us = sleep_us;
+	),
+	TP_printk("qid=%u cpms=%d epms=%d cpe_ratio=%d profile=%u sleep_us=%u",
+		__entry->qid, __entry->cpms, __entry->epms,
+		__entry->cpe_ratio, __entry->profile, __entry->sleep_us
+	)
+);
+
 #endif /* _TRACE_NVME_H */
 
 #undef TRACE_INCLUDE_PATH

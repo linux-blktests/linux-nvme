@@ -231,6 +231,7 @@ extern void devm_free_irq(struct device *dev, unsigned int irq, void *dev_id);
 
 bool irq_has_action(unsigned int irq);
 extern void disable_irq_nosync(unsigned int irq);
+extern void disable_irq_nowait(unsigned int irq);
 extern bool disable_hardirq(unsigned int irq);
 extern void disable_irq(unsigned int irq);
 extern void disable_percpu_irq(unsigned int irq);
