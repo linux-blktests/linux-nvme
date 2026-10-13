@@ -394,6 +394,11 @@ static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
 	log->iocs[nvme_cmd_write] =
 	log->iocs[nvme_cmd_write_zeroes] =
 		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP | NVME_CMD_EFFECTS_LBCC);
+	if (IS_ENABLED(CONFIG_NVME_TARGET_FDP)) {
+		log->iocs[nvme_cmd_io_mgmt_recv] =
+		log->iocs[nvme_cmd_io_mgmt_send] =
+			cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
+	}
 }
 
 static void nvmet_get_cmd_effects_zns(struct nvme_effects_log *log)
