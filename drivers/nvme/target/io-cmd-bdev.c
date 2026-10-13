@@ -300,6 +300,10 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	bio->bi_iter.bi_sector = sector;
 	bio->bi_private = req;
 	bio->bi_end_io = nvmet_bio_done;
+	if (req->cmd->rw.opcode == nvme_cmd_write &&
+	    nvmet_fdp_enabled(req->ns)) {
+		bio->bi_write_stream = nvmet_fdp_write_stream(req);
+	}
 
 	blk_start_plug(&plug);
 	if (req->metadata_len)
