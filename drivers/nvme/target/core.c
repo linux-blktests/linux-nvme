@@ -622,9 +622,15 @@ int nvmet_ns_enable(struct nvmet_ns *ns)
 			goto out_dev_put;
 	}
 
+	if (nvmet_fdp_enabled(ns)) {
+		ret = nvmet_fdp_init_ns(ns);
+		if (ret)
+			goto out_pr_exit;
+	}
+
 	ret = percpu_ref_init(&ns->ref, nvmet_destroy_namespace, 0, GFP_KERNEL);
 	if (ret)
-		goto out_pr_exit;
+		goto out_fdp_exit;
 
 	nvmet_ns_changed(subsys, ns->nsid);
 	ns->enabled = true;
@@ -635,6 +641,8 @@ int nvmet_ns_enable(struct nvmet_ns *ns)
 out_unlock:
 	mutex_unlock(&subsys->lock);
 	return ret;
+out_fdp_exit:
+	nvmet_fdp_exit_ns(ns);
 out_pr_exit:
 	if (ns->pr.enable)
 		nvmet_pr_exit_ns(ns);
@@ -679,6 +687,8 @@ void nvmet_ns_disable(struct nvmet_ns *ns)
 
 	if (ns->pr.enable)
 		nvmet_pr_exit_ns(ns);
+
+	nvmet_fdp_exit_ns(ns);
 
 	mutex_lock(&subsys->lock);
 	nvmet_ns_changed(subsys, ns->nsid);
@@ -1100,9 +1110,22 @@ static u32 nvmet_io_cmd_transfer_len(struct nvmet_req *req)
 		return nvmet_dsm_len(req);
 	case nvme_cmd_zone_mgmt_recv:
 		return (le32_to_cpu(req->cmd->zmr.numd) + 1) << 2;
+	case nvme_cmd_io_mgmt_recv:
+		if (IS_ENABLED(CONFIG_NVME_TARGET_FDP))
+			return (le32_to_cpu(req->cmd->imr.numd) + 1) << 2;
+		break;
+	case nvme_cmd_io_mgmt_send:
+		if (IS_ENABLED(CONFIG_NVME_TARGET_FDP)) {
+			u32 npid = le16_to_cpu(req->cmd->ims.mos);
+
+			return (npid + 1) * sizeof(__le16);
+		}
+		break;
 	default:
-		return 0;
+		break;
 	}
+
+	return 0;
 }
 
 static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
@@ -1142,6 +1165,17 @@ static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
 		ret = nvmet_parse_pr_cmd(req);
 		if (!ret)
 			return ret;
+	}
+
+	if (IS_ENABLED(CONFIG_NVME_TARGET_FDP)) {
+		switch (req->cmd->common.opcode) {
+		case nvme_cmd_io_mgmt_recv:
+			req->execute = nvmet_execute_io_mgmt_recv;
+			return 0;
+		case nvme_cmd_io_mgmt_send:
+			req->execute = nvmet_execute_io_mgmt_send;
+			return 0;
+		}
 	}
 
 	switch (req->ns->csi) {

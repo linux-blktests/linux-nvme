@@ -26,6 +26,20 @@ config NVME_TARGET_DEBUGFS
 
 	  If unsure, say N.
 
+config NVME_TARGET_FDP
+	bool "NVMe Target Flexible Data Placement bridge support"
+	depends on NVME_TARGET
+	depends on NVME_CORE=y || NVME_CORE=NVME_TARGET
+	help
+	  This enables the target side bridge for the Flexible Data
+	  Placement (FDP) capability: namespaces backed by an FDP capable
+	  NVMe namespace advertise the capability to hosts over NVMe-oF,
+	  translate the placement identifiers of write commands to
+	  backing write streams, and forward the FDP management commands
+	  and log pages to the backing controller.
+
+	  If unsure, say N.
+
 config NVME_TARGET_PASSTHRU
 	bool "NVMe Target Passthrough support"
 	depends on NVME_TARGET
