@@ -1688,9 +1688,16 @@ static ssize_t nvmet_subsys_attr_qid_max_store(struct config_item *item,
 	down_write(&nvmet_config_sem);
 	subsys->max_qid = qid_max;
 
-	/* Force reconnect */
+	/*
+	 * Force reconnect.  subsys->ctrls is protected by subsys->lock
+	 * (nvmet_alloc_ctrl()/nvmet_ctrl_free() add and remove entries under
+	 * it); take it here too so a concurrent controller teardown cannot
+	 * list_del() an entry while this loop walks the list.
+	 */
+	mutex_lock(&subsys->lock);
 	list_for_each_entry(ctrl, &subsys->ctrls, subsys_entry)
 		ctrl->ops->delete_ctrl(ctrl);
+	mutex_unlock(&subsys->lock);
 	up_write(&nvmet_config_sem);
 
 	return cnt;
