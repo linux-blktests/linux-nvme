@@ -481,13 +481,7 @@ int nvmf_connect_admin_queue(struct nvme_ctrl *ctrl)
 			goto out_free_data;
 		}
 		/* Authentication required */
-		ret = nvme_auth_negotiate(ctrl, 0);
-		if (ret) {
-			dev_warn(ctrl->device,
-				 "qid 0: authentication setup failed\n");
-			goto out_free_data;
-		}
-		ret = nvme_auth_wait(ctrl, 0);
+		ret = nvme_authenticate(ctrl, 0);
 		if (ret) {
 			dev_warn(ctrl->device,
 				 "qid 0: authentication failed, error %d\n",
@@ -556,13 +550,7 @@ int nvmf_connect_io_queue(struct nvme_ctrl *ctrl, u16 qid)
 			goto out_free_data;
 		}
 		/* Authentication required */
-		ret = nvme_auth_negotiate(ctrl, qid);
-		if (ret) {
-			dev_warn(ctrl->device,
-				 "qid %d: authentication setup failed\n", qid);
-			goto out_free_data;
-		}
-		ret = nvme_auth_wait(ctrl, qid);
+		ret = nvme_authenticate(ctrl, qid);
 		if (ret) {
 			dev_warn(ctrl->device,
 				 "qid %u: authentication failed, error %d\n",
