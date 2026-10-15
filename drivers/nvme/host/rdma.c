@@ -106,6 +106,7 @@ struct nvme_rdma_queue {
 	bool			pi_support;
 	int			cq_size;
 	struct mutex		queue_lock;
+	u32			max_inline_data;
 };
 
 struct nvme_rdma_setup_ctx {
@@ -265,7 +266,7 @@ static int nvme_rdma_wait_for_cm(struct nvme_rdma_queue *queue)
 static int nvme_rdma_create_qp(struct nvme_rdma_queue *queue, const int factor)
 {
 	struct nvme_rdma_device *dev = queue->device;
-	struct ib_qp_init_attr init_attr;
+	struct ib_qp_init_attr init_attr, attr;
 	int ret;
 
 	memset(&init_attr, 0, sizeof(init_attr));
@@ -284,9 +285,21 @@ static int nvme_rdma_create_qp(struct nvme_rdma_queue *queue, const int factor)
 		init_attr.create_flags |= IB_QP_CREATE_INTEGRITY_EN;
 	init_attr.qp_context = queue;
 
-	ret = rdma_create_qp(queue->cm_id, dev->pd, &init_attr);
+	/*
+	 * Ask for enough inline data to carry the command capsule in the send
+	 * WQE (see nvme_rdma_post_send()).  If the device cannot provide it,
+	 * create the QP without inline data and post the capsule by reference.
+	 */
+	attr = init_attr;
+	attr.cap.max_inline_data = sizeof(struct nvme_command);
+	ret = rdma_create_qp(queue->cm_id, dev->pd, &attr);
+	if (ret) {
+		attr = init_attr;
+		ret = rdma_create_qp(queue->cm_id, dev->pd, &attr);
+	}
 
 	queue->qp = queue->cm_id->qp;
+	queue->max_inline_data = ret ? 0 : attr.cap.max_inline_data;
 	return ret;
 }
 
@@ -1640,6 +1653,17 @@ static int nvme_rdma_post_send(struct nvme_rdma_queue *queue,
 	wr.num_sge    = num_sge;
 	wr.opcode     = IB_WR_SEND;
 	wr.send_flags = IB_SEND_SIGNALED;
+
+	/*
+	 * Post a capsule without in-capsule data inline if it fits in the
+	 * granted inline size, so the HCA does not have to DMA-read it from
+	 * host memory.  The CPU copies inline data from a kernel virtual
+	 * address, so point the SGE at qe->data.
+	 */
+	if (num_sge == 1 && sge->length <= queue->max_inline_data) {
+		sge->addr = (uintptr_t)qe->data;
+		wr.send_flags |= IB_SEND_INLINE;
+	}
 
 	if (first)
 		first->next = &wr;
