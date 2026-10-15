@@ -21,6 +21,7 @@ static mempool_t *nvme_chap_buf_pool;
 struct nvme_dhchap_queue_context {
 	struct list_head entry;
 	struct work_struct auth_work;
+	struct mutex auth_mutex;
 	struct nvme_ctrl *ctrl;
 	struct crypto_kpp *dh_tfm;
 	struct nvme_dhchap_key *transformed_key;
@@ -915,9 +916,12 @@ fail2:
 		chap->error = ret;
 }
 
-int nvme_auth_negotiate(struct nvme_ctrl *ctrl, int qid)
+static int nvme_auth_negotiate(struct nvme_ctrl *ctrl, int qid)
 {
 	struct nvme_dhchap_queue_context *chap;
+	enum nvme_ctrl_state state;
+	unsigned long flags;
+	int ret = 0;
 
 	if (!ctrl->host_key) {
 		dev_warn(ctrl->device, "qid %d: no key\n", qid);
@@ -931,12 +935,18 @@ int nvme_auth_negotiate(struct nvme_ctrl *ctrl, int qid)
 
 	chap = &ctrl->dhchap_ctxs[qid];
 	cancel_work_sync(&chap->auth_work);
-	queue_work(nvme_auth_wq, &chap->auth_work);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(nvme_auth_negotiate);
 
-int nvme_auth_wait(struct nvme_ctrl *ctrl, int qid)
+	spin_lock_irqsave(&ctrl->lock, flags);
+	state = nvme_ctrl_state(ctrl);
+	if (state != NVME_CTRL_LIVE && state != NVME_CTRL_CONNECTING)
+		ret = -ESHUTDOWN;
+	else
+		queue_work(nvme_auth_wq, &chap->auth_work);
+	spin_unlock_irqrestore(&ctrl->lock, flags);
+	return ret;
+}
+
+static int nvme_auth_wait(struct nvme_ctrl *ctrl, int qid)
 {
 	struct nvme_dhchap_queue_context *chap;
 	int ret;
@@ -948,13 +958,32 @@ int nvme_auth_wait(struct nvme_ctrl *ctrl, int qid)
 	nvme_auth_reset_dhchap(chap);
 	return ret;
 }
-EXPORT_SYMBOL_GPL(nvme_auth_wait);
+
+int nvme_authenticate(struct nvme_ctrl *ctrl, int qid)
+{
+	struct nvme_dhchap_queue_context *chap;
+	int ret;
+
+	if (!ctrl->dhchap_ctxs) {
+		dev_warn(ctrl->device, "qid %d: no key\n", qid);
+		return -ENOKEY;
+	}
+	chap = &ctrl->dhchap_ctxs[qid];
+
+	mutex_lock(&chap->auth_mutex);
+	ret = nvme_auth_negotiate(ctrl, qid);
+	if (!ret)
+		ret = nvme_auth_wait(ctrl, qid);
+	mutex_unlock(&chap->auth_mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(nvme_authenticate);
 
 static void nvme_ctrl_auth_work(struct work_struct *work)
 {
 	struct nvme_ctrl *ctrl =
 		container_of(work, struct nvme_ctrl, dhchap_auth_work);
-	int ret, q;
+	int ret, q, last = 1;
 
 	/*
 	 * If the ctrl is no connected, bail as reconnect will handle
@@ -964,16 +993,9 @@ static void nvme_ctrl_auth_work(struct work_struct *work)
 		return;
 
 	/* Authenticate admin queue first */
-	ret = nvme_auth_negotiate(ctrl, 0);
+	ret = nvme_authenticate(ctrl, 0);
 	if (ret) {
-		dev_warn(ctrl->device,
-			 "qid 0: error %d setting up authentication\n", ret);
-		return;
-	}
-	ret = nvme_auth_wait(ctrl, 0);
-	if (ret) {
-		dev_warn(ctrl->device,
-			 "qid 0: authentication failed\n");
+		dev_warn(ctrl->device, "qid 0: authentication failed\n");
 		return;
 	}
 	/*
@@ -991,22 +1013,26 @@ static void nvme_ctrl_auth_work(struct work_struct *work)
 		 */
 		if (!chap->authenticated)
 			continue;
-		cancel_work_sync(&chap->auth_work);
-		queue_work(nvme_auth_wq, &chap->auth_work);
+		ret = nvme_auth_negotiate(ctrl, q);
+		if (ret) {
+			dev_warn(ctrl->device,
+				 "qid %d: authentication setup failed, error %d\n",
+				 q, ret);
+			break;
+		}
+		last = q + 1;
 	}
 
 	/*
 	 * Failure is a soft-state; credentials remain valid until
 	 * the controller terminates the connection.
 	 */
-	for (q = 1; q < ctrl->queue_count; q++) {
+	for (q = 1; q < last; q++) {
 		struct nvme_dhchap_queue_context *chap =
 			&ctrl->dhchap_ctxs[q];
 		if (!chap->authenticated)
 			continue;
-		flush_work(&chap->auth_work);
-		ret = chap->error;
-		nvme_auth_reset_dhchap(chap);
+		ret = nvme_auth_wait(ctrl, q);
 		if (ret)
 			dev_warn(ctrl->device,
 				 "qid %d: authentication failed\n", q);
@@ -1044,6 +1070,7 @@ int nvme_auth_init_ctrl(struct nvme_ctrl *ctrl)
 		chap->qid = i;
 		chap->ctrl = ctrl;
 		chap->authenticated = false;
+		mutex_init(&chap->auth_mutex);
 		INIT_WORK(&chap->auth_work, nvme_queue_auth_work);
 	}
 
@@ -1060,7 +1087,17 @@ EXPORT_SYMBOL_GPL(nvme_auth_init_ctrl);
 
 void nvme_auth_stop(struct nvme_ctrl *ctrl)
 {
+	int i;
+
 	cancel_work_sync(&ctrl->dhchap_auth_work);
+	if (!ctrl->dhchap_ctxs)
+		return;
+
+	for (i = 0; i < ctrl_max_dhchaps(ctrl); i++) {
+		mutex_lock(&ctrl->dhchap_ctxs[i].auth_mutex);
+		cancel_work_sync(&ctrl->dhchap_ctxs[i].auth_work);
+		mutex_unlock(&ctrl->dhchap_ctxs[i].auth_mutex);
+	}
 }
 EXPORT_SYMBOL_GPL(nvme_auth_stop);
 

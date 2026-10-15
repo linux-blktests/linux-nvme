@@ -1289,8 +1289,7 @@ int __init nvme_init_auth(void);
 void __exit nvme_exit_auth(void);
 int nvme_auth_init_ctrl(struct nvme_ctrl *ctrl);
 void nvme_auth_stop(struct nvme_ctrl *ctrl);
-int nvme_auth_negotiate(struct nvme_ctrl *ctrl, int qid);
-int nvme_auth_wait(struct nvme_ctrl *ctrl, int qid);
+int nvme_authenticate(struct nvme_ctrl *ctrl, int qid);
 void nvme_auth_free(struct nvme_ctrl *ctrl);
 void nvme_auth_revoke_tls_key(struct nvme_ctrl *ctrl);
 #else
@@ -1306,11 +1305,7 @@ static inline void __exit nvme_exit_auth(void)
 {
 }
 static inline void nvme_auth_stop(struct nvme_ctrl *ctrl) {};
-static inline int nvme_auth_negotiate(struct nvme_ctrl *ctrl, int qid)
-{
-	return -EPROTONOSUPPORT;
-}
-static inline int nvme_auth_wait(struct nvme_ctrl *ctrl, int qid)
+static inline int nvme_authenticate(struct nvme_ctrl *ctrl, int qid)
 {
 	return -EPROTONOSUPPORT;
 }

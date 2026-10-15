@@ -1038,13 +1038,7 @@ static ssize_t tls_configured_key_store(struct device *dev,
 	if (!ctrl->opts || !ctrl->opts->concat)
 		return -EOPNOTSUPP;
 
-	error = nvme_auth_negotiate(ctrl, 0);
-	if (error < 0) {
-		nvme_reset_ctrl(ctrl);
-		return error;
-	}
-
-	error = nvme_auth_wait(ctrl, 0);
+	error = nvme_authenticate(ctrl, 0);
 	if (error < 0) {
 		nvme_reset_ctrl(ctrl);
 		return error;
