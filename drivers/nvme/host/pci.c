@@ -3665,6 +3665,20 @@ static unsigned long check_vendor_combination_bug(struct pci_dev *pdev)
 	}
 
 	/*
+	 * On the Inspur CP300F3 / NF50 (Phytium) platform the SoC root complex
+	 * does not keep the PCIe link alive across an S3 (deep) suspend, so an
+	 * NVMe controller that the host-managed suspend path leaves in a
+	 * non-operational power state never comes back after resume (I/O
+	 * timeouts, reset failure, filesystem abort).  The firmware does not
+	 * advertise firmware-managed suspend and the failure reproduces with
+	 * SSDs from different vendors, so key off the board instead of a
+	 * specific device and always take the full shutdown path there.
+	 */
+	if (dmi_match(DMI_BOARD_VENDOR, "Inspur") &&
+	    dmi_match(DMI_BOARD_NAME, "NF50"))
+		return NVME_QUIRK_SIMPLE_SUSPEND;
+
+	/*
 	 * NVMe SSD drops off the PCIe bus after system idle
 	 * for 10 hours on a Lenovo N60z board.
 	 */
