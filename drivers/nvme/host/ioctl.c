@@ -474,12 +474,18 @@ static enum rq_end_io_ret nvme_uring_cmd_end_io(struct request *req,
 	 */
 	if (blk_rq_is_poll(req) && iob &&
 	    iob->poll_ctx == io_uring_cmd_ctx_handle(ioucmd)) {
+		int ret = 0;
+
+		blk_mq_free_request(req);
 		if (pdu->bio)
-			blk_rq_unmap_user(pdu->bio);
+			ret = blk_rq_unmap_user(pdu->bio);
+		if (!pdu->status)
+			pdu->status = ret;
 		io_uring_cmd_done32(ioucmd, pdu->status, pdu->result, 0);
-	} else {
-		io_uring_cmd_do_in_task_lazy(ioucmd, nvme_uring_task_cb);
+		return RQ_END_IO_NONE;
 	}
+
+	io_uring_cmd_do_in_task_lazy(ioucmd, nvme_uring_task_cb);
 	return RQ_END_IO_FREE;
 }
 
