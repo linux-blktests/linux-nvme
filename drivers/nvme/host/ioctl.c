@@ -200,7 +200,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	struct request *req;
 	struct bio *bio;
 	u32 effects;
-	int ret;
+	int ret, unmap_ret = 0;
 
 	req = nvme_alloc_user_request(q, cmd, 0, 0);
 	if (IS_ERR(req))
@@ -226,7 +226,9 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	if (effects)
 		nvme_passthru_end(ctrl, ns, effects, cmd, ret);
 	if (bio)
-		blk_rq_unmap_user(bio);
+		unmap_ret = blk_rq_unmap_user(bio);
+	if (!ret)
+		ret = unmap_ret;
 	return ret;
 
 out_free_req:
