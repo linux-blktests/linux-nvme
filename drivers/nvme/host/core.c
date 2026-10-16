@@ -1278,6 +1278,30 @@ u32 nvme_passthru_start(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u8 opcode)
 }
 EXPORT_SYMBOL_NS_GPL(nvme_passthru_start, "NVME_TARGET_PASSTHRU");
 
+static void nvme_query_vwc_status(struct nvme_ctrl *ctrl)
+{
+	u32 result;
+	int ret;
+
+	/* Assume the volatile write cache is enabled until proven otherwise */
+	ctrl->vwc_status |= NVME_FEAT_VWC_ENABLE;
+
+	if (!(ctrl->vwc & NVME_CTRL_VWC_PRESENT))
+		return;
+
+	ret = nvme_get_features(ctrl, NVME_FEAT_VOLATILE_WC, 0, NULL, 0,
+			&result);
+	if (ret) {
+		dev_warn(ctrl->device,
+			"failed to get volatile write cache status (%d)\n",
+			ret);
+		return;
+	}
+
+	if (!(result & NVME_FEAT_VWC_ENABLE))
+		ctrl->vwc_status &= ~NVME_FEAT_VWC_ENABLE;
+}
+
 u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 		       struct nvme_command *cmd, int status)
 {
@@ -1312,6 +1336,20 @@ u32 nvme_passthru_end(struct nvme_ctrl *ctrl, struct nvme_ns *ns, u32 effects,
 			 */
 			if (!status)
 				nvme_update_keep_alive(ctrl, cmd);
+			break;
+		case NVME_FEAT_VOLATILE_WC:
+			/*
+			 * Refresh the volatile write cache state and revalidate
+			 * the namespaces so that flushes and FUA writes are
+			 * issued if the cache was enabled. In that case, wait
+			 * for the revalidation to complete before returning.
+			 */
+			if (!status) {
+				nvme_query_vwc_status(ctrl);
+				nvme_queue_scan(ctrl);
+				if (nvme_ctrl_vwc_enabled(ctrl))
+					flush_work(&ctrl->scan_work);
+			}
 			break;
 		default:
 			break;
@@ -2474,7 +2512,7 @@ static int nvme_update_ns_info_block(struct nvme_ns *ns,
 				 "not enabling zoned mode");
 	}
 
-	if ((ns->ctrl->vwc & NVME_CTRL_VWC_PRESENT) && !info->no_vwc)
+	if (nvme_ctrl_vwc_enabled(ns->ctrl) && !info->no_vwc)
 		lim.features |= BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
 	else
 		lim.features &= ~(BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA);
@@ -3696,6 +3734,7 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 
 	atomic_set(&ctrl->abort_limit, id->acl + 1);
 	ctrl->vwc = id->vwc;
+	nvme_query_vwc_status(ctrl);
 	if (id->mdts)
 		max_hw_sectors = nvme_mps_to_sectors(ctrl, id->mdts);
 	else
