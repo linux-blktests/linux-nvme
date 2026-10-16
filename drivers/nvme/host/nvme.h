@@ -399,6 +399,7 @@ struct nvme_ctrl {
 	u32 max_namespaces;
 	atomic_t abort_limit;
 	u8 vwc;
+	u32 vwc_status;
 	u32 vs;
 	u32 sgls;
 	u16 kas;
@@ -1269,6 +1270,15 @@ static inline void nvme_start_request(struct request *rq)
 	if (rq->cmd_flags & REQ_NVME_MPATH)
 		nvme_mpath_start_request(rq);
 	blk_mq_start_request(rq);
+}
+
+/*
+ * The volatile write cache status depends on both its presence and its state.
+ */
+static inline bool nvme_ctrl_vwc_enabled(struct nvme_ctrl *ctrl)
+{
+	return (ctrl->vwc & NVME_CTRL_VWC_PRESENT) &&
+		(ctrl->vwc_status & NVME_FEAT_VWC_ENABLE);
 }
 
 static inline bool nvme_ctrl_sgl_supported(struct nvme_ctrl *ctrl)
