@@ -439,9 +439,12 @@ static void nvme_uring_task_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
 	struct io_uring_cmd *ioucmd = io_uring_cmd_from_tw(tw_req);
 	struct nvme_uring_cmd_pdu *pdu = nvme_uring_cmd_pdu(ioucmd);
+	int ret = 0;
 
 	if (pdu->bio)
-		blk_rq_unmap_user(pdu->bio);
+		ret = blk_rq_unmap_user(pdu->bio);
+	if (!pdu->status)
+		pdu->status = ret;
 	io_uring_cmd_done32(ioucmd, pdu->status, pdu->result,
 			    IO_URING_CMD_TASK_WORK_ISSUE_FLAGS);
 }
