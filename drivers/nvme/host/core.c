@@ -2478,6 +2478,8 @@ static int nvme_update_ns_info_block(struct nvme_ns *ns,
 		lim.features |= BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA;
 	else
 		lim.features &= ~(BLK_FEAT_WRITE_CACHE | BLK_FEAT_FUA);
+	if (ns->ctrl->quirks & NVME_QUIRK_NO_FUA)
+		lim.features &= ~BLK_FEAT_FUA;
 
 	if (info->is_rotational)
 		lim.features |= BLK_FEAT_ROTATIONAL;
@@ -3091,6 +3093,15 @@ struct nvme_core_quirk_entry {
 };
 
 static const struct nvme_core_quirk_entry core_quirks[] = {
+	{
+		/*
+		 * ADATA XPG GAMMIX S70 BLADE (fw 03020P5E) takes 200-600 ms
+		 * to complete FUA writes while Flush takes ~1.3 ms.
+		 */
+		.vid = 0x1cc1,
+		.mn = "XPG GAMMIX S70 BLADE",
+		.quirks = NVME_QUIRK_NO_FUA,
+	},
 	{
 		/*
 		 * This Toshiba device seems to die using any APST states.  See:
