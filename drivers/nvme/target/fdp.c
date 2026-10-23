@@ -12,6 +12,10 @@
 #include "../host/nvme.h"
 #include "nvmet.h"
 
+/* Flexible Data Placement feature (FID 1Dh), Command Dword 12 */
+#define NVME_FDP_CDW12_FDPE			(1U << 0)
+#define NVME_FDP_CDW12_FDPCIDX_MASK		(0xffU << 8)
+
 bool nvmet_fdp_subsys_configured(struct nvmet_subsys *subsys)
 {
 	struct nvmet_ns *ns;
@@ -83,3 +87,82 @@ void nvmet_fdp_exit_ns(struct nvmet_ns *ns)
 	ns->fdp.backend_q = NULL;
 	ns->fdp.backend_ctrl = NULL;
 }
+
+
+/*
+ * Each namespace is its own endurance group, so the Endurance Group
+ * Identifier in Command Dword 11, and in the Log Specific Identifier
+ * of the FDP log pages, directly names the namespace.  Returns the
+ * namespace with a reference held.
+ */
+static struct nvmet_ns *nvmet_fdp_lookup_ns(struct nvmet_req *req, u32 endgid)
+{
+	struct nvmet_subsys *subsys = nvmet_req_subsys(req);
+	struct nvmet_ns *ns;
+
+	rcu_read_lock();
+	ns = xa_load(&subsys->namespaces, endgid);
+	if (!ns || !ns->enabled || !nvmet_fdp_enabled(ns))
+		goto out_unlock;
+
+	if (!percpu_ref_tryget_live(&ns->ref))
+		goto out_unlock;
+
+	rcu_read_unlock();
+	return ns;
+
+out_unlock:
+	rcu_read_unlock();
+	return NULL;
+}
+
+/*
+ * The bridge runs the one configuration that the backing device is
+ * already in, so setting the feature to that same value is the only
+ * transition that can be served.  The spec aborts any other value
+ * change of a feature whose endurance group has namespaces with
+ * Command Sequence Error, which also covers disabling: pulling FDP
+ * from under a live namespace would strand the write streams already
+ * handed out to hosts.
+ */
+u16 nvmet_set_feat_fdp(struct nvmet_req *req)
+{
+	u32 cdw12 = le32_to_cpu(req->cmd->features.dword12);
+	struct nvmet_ns *ns;
+	u16 status;
+
+	ns = nvmet_fdp_lookup_ns(req,
+				 le32_to_cpu(req->cmd->features.dword11));
+	if (!ns)
+		return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+
+	if (cdw12 & ~(NVME_FDP_CDW12_FDPCIDX_MASK | NVME_FDP_CDW12_FDPE)) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+	} else if ((cdw12 & NVME_FDP_CDW12_FDPE) &&
+		   !(cdw12 & NVME_FDP_CDW12_FDPCIDX_MASK)) {
+		nvmet_set_result(req, FDPCFG_FDPE);
+		status = 0;
+	} else {
+		status = NVME_SC_CMD_SEQ_ERROR | NVME_STATUS_DNR;
+	}
+
+	percpu_ref_put(&ns->ref);
+	return status;
+}
+
+u16 nvmet_get_feat_fdp(struct nvmet_req *req)
+{
+	struct nvmet_ns *ns;
+
+	ns = nvmet_fdp_lookup_ns(req,
+				 le32_to_cpu(req->cmd->features.dword11));
+	if (!ns)
+		return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+
+	/* the namespace is up, so FDP is enabled on the backing device */
+	nvmet_set_result(req, FDPCFG_FDPE);
+
+	percpu_ref_put(&ns->ref);
+	return 0;
+}
+

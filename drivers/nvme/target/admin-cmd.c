@@ -600,6 +600,9 @@ static void nvmet_execute_get_log_page_features(struct nvmet_req *req)
 		cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_NSCPE);
 	features->fis[NVME_FEAT_RESV_MASK] =
 		cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_NSCPE);
+	if (nvmet_fdp_subsys_configured(nvmet_req_subsys(req)))
+		features->fis[NVME_FEAT_FDP] =
+			cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_EGSCPE);
 
 	status = nvmet_copy_to_sgl(req, 0, features, sizeof(*features));
 	kfree(features);
@@ -1385,6 +1388,9 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 	case NVME_FEAT_RESV_MASK:
 		status = nvmet_set_feat_resv_notif_mask(req, cdw11);
 		break;
+	case NVME_FEAT_FDP:
+		status = nvmet_set_feat_fdp(req);
+		break;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
 		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
@@ -1561,6 +1567,9 @@ void nvmet_execute_get_features(struct nvmet_req *req)
 		break;
 	case NVME_FEAT_RESV_MASK:
 		status = nvmet_get_feat_resv_notif_mask(req);
+		break;
+	case NVME_FEAT_FDP:
+		status = nvmet_get_feat_fdp(req);
 		break;
 	default:
 		req->error_loc =
