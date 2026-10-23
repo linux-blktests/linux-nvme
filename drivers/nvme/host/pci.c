@@ -3296,14 +3296,19 @@ static void nvme_dev_unmap(struct nvme_dev *dev)
 	pci_release_mem_regions(to_pci_dev(dev->dev));
 }
 
-static bool nvme_pci_ctrl_is_dead(struct nvme_dev *dev)
+static bool nvme_pci_ctrl_is_accessible(struct nvme_dev *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev->dev);
+
+	return pci_is_enabled(pdev) && pci_device_is_present(pdev) &&
+		pdev->error_state == pci_channel_io_normal;
+}
+
+static bool nvme_pci_ctrl_is_dead(struct nvme_dev *dev)
+{
 	u32 csts;
 
-	if (!pci_is_enabled(pdev) || !pci_device_is_present(pdev))
-		return true;
-	if (pdev->error_state != pci_channel_io_normal)
+	if (!nvme_pci_ctrl_is_accessible(dev))
 		return true;
 
 	csts = readl(dev->bar + NVME_REG_CSTS);
@@ -3331,10 +3336,16 @@ static void nvme_dev_disable(struct nvme_dev *dev, bool shutdown)
 
 	nvme_quiesce_io_queues(&dev->ctrl);
 
-	if (!dead && dev->ctrl.queue_count > 0) {
+	if (!dead && dev->ctrl.queue_count > 0)
 		nvme_delete_io_queues(dev);
-		nvme_disable_ctrl(&dev->ctrl, shutdown);
-		nvme_poll_irqdisable(&dev->queues[0]);
+	if (dev->ctrl.queue_count > 0 && nvme_pci_ctrl_is_accessible(dev)) {
+		/*
+		 * Stop an accessible controller even if it reports itself dead.
+		 * Otherwise it may complete requests after they have been cancelled.
+		 */
+		nvme_disable_ctrl(&dev->ctrl, shutdown && !dead);
+		if (!dead)
+			nvme_poll_irqdisable(&dev->queues[0]);
 	}
 	nvme_suspend_io_queues(dev);
 	nvme_suspend_queue(dev, 0);
