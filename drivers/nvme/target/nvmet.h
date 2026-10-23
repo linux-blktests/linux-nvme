@@ -97,6 +97,14 @@ struct nvmet_pr_per_ctrl_ref {
 	uuid_t			hostid;
 };
 
+struct nvmet_fdp {
+	bool			enable;
+	u16			nruh;
+	u64			runs;
+	struct request_queue	*backend_q;
+	struct nvme_ctrl	*backend_ctrl;
+};
+
 struct nvmet_ns {
 	struct percpu_ref	ref;
 	struct file		*bdev_file;
@@ -130,6 +138,9 @@ struct nvmet_ns {
 	u8			csi;
 	struct nvmet_pr		pr;
 	struct xarray		pr_per_ctrl_refs;
+#ifdef CONFIG_NVME_TARGET_FDP
+	struct nvmet_fdp	fdp;
+#endif
 #ifdef CONFIG_NVME_TARGET_DEBUGFS
 	struct dentry		*debugfs_dir;
 #endif
@@ -981,6 +992,32 @@ static inline void nvmet_pr_put_ns_pc_ref(struct nvmet_pr_per_ctrl_ref *pc_ref)
 {
 	percpu_ref_put(&pc_ref->ref);
 }
+
+#ifdef CONFIG_NVME_TARGET_FDP
+static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
+{
+	return ns->fdp.enable;
+}
+int nvmet_fdp_init_ns(struct nvmet_ns *ns);
+void nvmet_fdp_exit_ns(struct nvmet_ns *ns);
+bool nvmet_fdp_subsys_configured(struct nvmet_subsys *subsys);
+#else
+static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
+{
+	return false;
+}
+static inline int nvmet_fdp_init_ns(struct nvmet_ns *ns)
+{
+	return -EINVAL;
+}
+static inline void nvmet_fdp_exit_ns(struct nvmet_ns *ns)
+{
+}
+static inline bool nvmet_fdp_subsys_configured(struct nvmet_subsys *subsys)
+{
+	return false;
+}
+#endif
 
 /*
  * Data for the get_feature() and set_feature() operations of PCI target
