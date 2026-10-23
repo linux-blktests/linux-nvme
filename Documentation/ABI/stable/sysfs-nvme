@@ -326,6 +326,28 @@ Description:
 		currently selected path. Returns empty if iopolicy is not
 		"numa". Requires CONFIG_NVME_MULTIPATH.
 
+What:		/sys/block/nvmeXcYnZ/in_flight_bytes
+What:		/sys/block/nvmeXcYnZ/relative_throughput
+Date:		October 2026
+KernelVersion:	7.5
+Contact:	Guixin Liu <kanie@linux.alibaba.com>
+Description:
+		in_flight_bytes: Shows the number of bytes currently in
+		flight on this path's controller. Returns empty if
+		iopolicy is not "service-time".
+		Requires CONFIG_NVME_MULTIPATH.
+
+		relative_throughput: Shows or sets the relative
+		throughput weight of this path's controller, which the
+		"service-time" iopolicy uses to estimate the path service
+		time as in_flight_bytes / relative_throughput. The value is
+		an integer in the range 0-100 and defaults to 1; assign
+		higher values to faster paths. A path with a value of 0 is
+		only selected when no path with a positive value is
+		available. Reading returns empty if iopolicy is not
+		"service-time"; writing is accepted regardless of the
+		active policy. Requires CONFIG_NVME_MULTIPATH.
+
 What:		/sys/block/nvmeXnY/delayed_removal_secs
 Date:		May 2025
 KernelVersion:	6.16
@@ -440,9 +462,9 @@ Contact:	Hannes Reinecke <hare@suse.de>
 Description:
 		Shows or sets the multipath I/O path selection policy for
 		this subsystem. Accepted values: "numa", "round-robin",
-		"queue-depth". Changing the policy clears all current path
-		selections. Only available when CONFIG_NVME_MULTIPATH is
-		enabled.
+		"queue-depth", "service-time". Changing the policy clears
+		all current path selections. Only available when
+		CONFIG_NVME_MULTIPATH is enabled.
 
 What:		/sys/class/nvme-subsystem/nvme-subsysX/subsystype
 Date:		September 2021

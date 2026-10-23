@@ -69,6 +69,7 @@ static const char *nvme_iopolicy_names[] = {
 	[NVME_IOPOLICY_NUMA]	= "numa",
 	[NVME_IOPOLICY_RR]	= "round-robin",
 	[NVME_IOPOLICY_QD]      = "queue-depth",
+	[NVME_IOPOLICY_ST]	= "service-time",
 };
 
 static int iopolicy = NVME_IOPOLICY_NUMA;
@@ -107,7 +108,7 @@ static int nvme_get_iopolicy(char *buf, const struct kernel_param *kp)
 module_param_call(iopolicy, nvme_set_iopolicy, nvme_get_iopolicy,
 	&iopolicy, 0644);
 MODULE_PARM_DESC(iopolicy,
-	"Default multipath I/O policy; 'numa' (default), 'round-robin' or 'queue-depth'");
+	"Default multipath I/O policy; 'numa' (default), 'round-robin', 'queue-depth' or 'service-time'");
 
 void nvme_mpath_default_iopolicy(struct nvme_subsystem *subsys)
 {
@@ -144,6 +145,24 @@ void nvme_mpath_start_freeze(struct nvme_subsystem *subsys)
 			blk_freeze_queue_start(h->disk->queue);
 }
 
+/*
+ * Release in-flight bytes without letting the counter go negative: a
+ * request that sat in a requeue list across a controller reset is
+ * accounted against the pre-reset counter, but completes after
+ * nvme_mpath_init_identify() has zeroed it, in which case the plain
+ * subtraction would underflow.  This mirrors atomic_dec_if_positive()
+ * in the queue-depth accounting.
+ */
+static void nvme_st_release(struct nvme_ctrl *ctrl, unsigned int bytes)
+{
+	s64 old, new;
+
+	do {
+		old = atomic64_read(&ctrl->in_flight_size);
+		new = max_t(s64, 0, old - bytes);
+	} while (!atomic64_try_cmpxchg(&ctrl->in_flight_size, &old, new));
+}
+
 void nvme_failover_req(struct request *req)
 {
 	struct nvme_ns *ns = req->q->queuedata;
@@ -164,6 +183,15 @@ void nvme_failover_req(struct request *req)
 		queue_work(nvme_wq, &ns->ctrl->ana_work);
 	}
 
+	/*
+	 * blk_steal_bios() clears req->__data_len, so release the bytes
+	 * accounted by the service-time policy before stealing the bios.
+	 */
+	if (nvme_req(req)->flags & NVME_MPATH_CNT_ACTIVE_BYTES) {
+		nvme_st_release(ns->ctrl, blk_rq_bytes(req));
+		nvme_req(req)->flags &= ~NVME_MPATH_CNT_ACTIVE_BYTES;
+	}
+
 	spin_lock_irqsave(&ns->head->requeue_lock, flags);
 	for (bio = req->bio; bio; bio = bio->bi_next)
 		bio_set_dev(bio, ns->head->disk->part0);
@@ -179,11 +207,16 @@ void nvme_mpath_start_request(struct request *rq)
 {
 	struct nvme_ns *ns = rq->q->queuedata;
 	struct gendisk *disk = ns->head->disk;
+	int iopolicy = READ_ONCE(ns->head->subsys->iopolicy);
 
-	if ((READ_ONCE(ns->head->subsys->iopolicy) == NVME_IOPOLICY_QD) &&
+	if (iopolicy == NVME_IOPOLICY_QD &&
 	    !(nvme_req(rq)->flags & NVME_MPATH_CNT_ACTIVE)) {
 		atomic_inc(&ns->ctrl->nr_active);
 		nvme_req(rq)->flags |= NVME_MPATH_CNT_ACTIVE;
+	} else if (iopolicy == NVME_IOPOLICY_ST &&
+		   !(nvme_req(rq)->flags & NVME_MPATH_CNT_ACTIVE_BYTES)) {
+		atomic64_add(blk_rq_bytes(rq), &ns->ctrl->in_flight_size);
+		nvme_req(rq)->flags |= NVME_MPATH_CNT_ACTIVE_BYTES;
 	}
 
 	if (!blk_queue_io_stat(disk->queue) ||
@@ -205,6 +238,10 @@ void nvme_mpath_end_request(struct request *rq)
 
 	if (nvme_req(rq)->flags & NVME_MPATH_CNT_ACTIVE)
 		atomic_dec_if_positive(&ns->ctrl->nr_active);
+	if (nvme_req(rq)->flags & NVME_MPATH_CNT_ACTIVE_BYTES) {
+		nvme_st_release(ns->ctrl, blk_rq_bytes(rq));
+		nvme_req(rq)->flags &= ~NVME_MPATH_CNT_ACTIVE_BYTES;
+	}
 
 	if (!(nvme_req(rq)->flags & NVME_MPATH_IO_STATS))
 		return;
@@ -464,6 +501,109 @@ static struct nvme_ns *nvme_queue_depth_path(struct nvme_ns_head *head)
 	return best_opt ? best_opt : best_nonopt;
 }
 
+#define ST_MAX_RELATIVE_THROUGHPUT	100
+#define ST_MAX_RELATIVE_THROUGHPUT_SHIFT	7
+#define ST_MAX_INFLIGHT_SIZE \
+	(U64_MAX >> ST_MAX_RELATIVE_THROUGHPUT_SHIFT)
+
+/*
+ * Compare estimated service time of two paths.
+ * Returns negative if ns1 is better, positive if ns2 is better, 0 if equal.
+ *
+ * Service time = in_flight_size / relative_throughput
+ * Cross-multiply to avoid division.
+ */
+static int nvme_st_compare_load(struct nvme_ns *ns1, struct nvme_ns *ns2)
+{
+	u64 sz1, sz2, st1, st2;
+	unsigned int tp1 = ns1->ctrl->relative_throughput;
+	unsigned int tp2 = ns2->ctrl->relative_throughput;
+
+	sz1 = atomic64_read(&ns1->ctrl->in_flight_size);
+	sz2 = atomic64_read(&ns2->ctrl->in_flight_size);
+
+	/* Case 1: same throughput — compare load directly */
+	if (tp1 == tp2)
+		return (sz1 > sz2) - (sz1 < sz2);
+
+	/*
+	 * Case 2a: same load — prefer higher throughput.
+	 * Case 2b: one path has zero throughput — prefer the other.
+	 */
+	if (sz1 == sz2 || !tp1 || !tp2)
+		return tp2 - tp1;
+
+	/*
+	 * Case 3: general comparison via cross-multiplication.
+	 *   st1 = sz1 / tp1
+	 *   st2 = sz2 / tp2
+	 * Equivalent (since tp > 0):
+	 *   sz1 * tp2 <=> sz2 * tp1
+	 *
+	 * Use comparisons instead of subtractions when returning: the
+	 * intermediate values do not fit into the int return type.
+	 */
+	if (unlikely(sz1 >= ST_MAX_INFLIGHT_SIZE ||
+		     sz2 >= ST_MAX_INFLIGHT_SIZE)) {
+		sz1 >>= ST_MAX_RELATIVE_THROUGHPUT_SHIFT;
+		sz2 >>= ST_MAX_RELATIVE_THROUGHPUT_SHIFT;
+	}
+	st1 = sz1 * tp2;
+	st2 = sz2 * tp1;
+	if (st1 != st2)
+		return (st1 > st2) - (st1 < st2);
+
+	/* Case 4: equal service time — prefer higher throughput */
+	return tp2 - tp1;
+}
+
+static struct nvme_ns *nvme_service_time_path(struct nvme_ns_head *head)
+{
+	struct nvme_ns *best_opt = NULL, *best_nonopt = NULL, *ns;
+	struct nvme_ns *fallback_opt = NULL, *fallback_nonopt = NULL;
+
+	list_for_each_entry_srcu(ns, &head->list, siblings,
+				 srcu_read_lock_held(&head->srcu)) {
+		if (nvme_path_is_disabled(ns))
+			continue;
+
+		/*
+		 * Paths with relative_throughput == 0 are only used when no
+		 * path with a positive value is available (matching DM
+		 * service-time semantics).
+		 */
+		if (!ns->ctrl->relative_throughput) {
+			if (ns->ana_state == NVME_ANA_OPTIMIZED && !fallback_opt)
+				fallback_opt = ns;
+			else if (ns->ana_state == NVME_ANA_NONOPTIMIZED &&
+				 !fallback_nonopt)
+				fallback_nonopt = ns;
+			continue;
+		}
+
+		switch (ns->ana_state) {
+		case NVME_ANA_OPTIMIZED:
+			if (!best_opt ||
+			    nvme_st_compare_load(ns, best_opt) < 0)
+				best_opt = ns;
+			break;
+		case NVME_ANA_NONOPTIMIZED:
+			if (!best_nonopt ||
+			    nvme_st_compare_load(ns, best_nonopt) < 0)
+				best_nonopt = ns;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (best_opt)
+		return best_opt;
+	if (best_nonopt)
+		return best_nonopt;
+	return fallback_opt ? fallback_opt : fallback_nonopt;
+}
+
 static inline bool nvme_path_is_optimized(struct nvme_ns *ns)
 {
 	return nvme_ctrl_state(ns->ctrl) == NVME_CTRL_LIVE &&
@@ -491,6 +631,8 @@ inline struct nvme_ns *nvme_find_path(struct nvme_ns_head *head)
 		return nvme_queue_depth_path(head);
 	case NVME_IOPOLICY_RR:
 		return nvme_round_robin_path(head);
+	case NVME_IOPOLICY_ST:
+		return nvme_service_time_path(head);
 	default:
 		return nvme_numa_path(head);
 	}
@@ -1110,6 +1252,47 @@ static ssize_t queue_depth_show(struct device *dev,
 }
 DEVICE_ATTR_RO(queue_depth);
 
+static ssize_t in_flight_bytes_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nvme_ns *ns = nvme_get_ns_from_dev(dev);
+
+	if (ns->head->subsys->iopolicy != NVME_IOPOLICY_ST)
+		return 0;
+
+	return sysfs_emit(buf, "%lld\n", atomic64_read(&ns->ctrl->in_flight_size));
+}
+DEVICE_ATTR_RO(in_flight_bytes);
+
+static ssize_t relative_throughput_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nvme_ns *ns = nvme_get_ns_from_dev(dev);
+
+	if (ns->head->subsys->iopolicy != NVME_IOPOLICY_ST)
+		return 0;
+
+	return sysfs_emit(buf, "%u\n", ns->ctrl->relative_throughput);
+}
+
+static ssize_t relative_throughput_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	struct nvme_ns *ns = nvme_get_ns_from_dev(dev);
+	unsigned int val;
+	int ret;
+
+	ret = kstrtouint(buf, 0, &val);
+	if (ret < 0)
+		return ret;
+	if (val > ST_MAX_RELATIVE_THROUGHPUT)
+		return -EINVAL;
+
+	ns->ctrl->relative_throughput = val;
+	return count;
+}
+DEVICE_ATTR_RW(relative_throughput);
+
 static ssize_t numa_nodes_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
@@ -1435,6 +1618,7 @@ void nvme_mpath_init_ctrl(struct nvme_ctrl *ctrl)
 	mutex_init(&ctrl->ana_lock);
 	timer_setup(&ctrl->anatt_timer, nvme_anatt_timeout, 0);
 	INIT_WORK(&ctrl->ana_work, nvme_ana_work);
+	ctrl->relative_throughput = 1;
 }
 
 int nvme_mpath_init_identify(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
@@ -1450,6 +1634,7 @@ int nvme_mpath_init_identify(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 
 	/* initialize this in the identify path to cover controller resets */
 	atomic_set(&ctrl->nr_active, 0);
+	atomic64_set(&ctrl->in_flight_size, 0);
 
 	if (!ctrl->max_namespaces ||
 	    ctrl->max_namespaces > le32_to_cpu(id->nn)) {
