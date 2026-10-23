@@ -9,6 +9,7 @@
 #include <linux/memremap.h>
 #include <linux/module.h>
 #include "nvmet.h"
+#include "trace.h"
 
 void nvmet_bdev_set_limits(struct block_device *bdev, struct nvme_id_ns *id)
 {
@@ -305,6 +306,13 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	    nvmet_fdp_enabled(req->ns)) {
 		write_stream = nvmet_fdp_write_stream(req);
 		bio->bi_write_stream = write_stream;
+
+		if (write_stream) {
+			u16 pid = le32_to_cpu(req->cmd->rw.dsmgmt) >> 16;
+
+			trace_nvmet_fdp_write_translate(req, pid,
+							write_stream);
+		}
 	}
 
 	blk_start_plug(&plug);
