@@ -699,6 +699,8 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	ctratt = NVME_CTRL_ATTR_HID_128_BIT | NVME_CTRL_ATTR_TBKAS;
 	if (nvmet_is_pci_ctrl(ctrl))
 		ctratt |= NVME_CTRL_ATTR_RHII;
+	if (nvmet_fdp_subsys_configured(ctrl->subsys))
+		ctratt |= NVME_CTRL_ATTR_FDPS;
 	id->ctratt = cpu_to_le32(ctratt);
 
 	id->oacs = 0;
