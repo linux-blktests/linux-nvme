@@ -1110,9 +1110,22 @@ static u32 nvmet_io_cmd_transfer_len(struct nvmet_req *req)
 		return nvmet_dsm_len(req);
 	case nvme_cmd_zone_mgmt_recv:
 		return (le32_to_cpu(req->cmd->zmr.numd) + 1) << 2;
+	case nvme_cmd_io_mgmt_recv:
+		if (IS_ENABLED(CONFIG_NVME_TARGET_FDP))
+			return (le32_to_cpu(req->cmd->imr.numd) + 1) << 2;
+		break;
+	case nvme_cmd_io_mgmt_send:
+		if (IS_ENABLED(CONFIG_NVME_TARGET_FDP)) {
+			u32 npid = le16_to_cpu(req->cmd->ims.mos);
+
+			return (npid + 1) * sizeof(__le16);
+		}
+		break;
 	default:
-		return 0;
+		break;
 	}
+
+	return 0;
 }
 
 static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
@@ -1152,6 +1165,17 @@ static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
 		ret = nvmet_parse_pr_cmd(req);
 		if (!ret)
 			return ret;
+	}
+
+	if (IS_ENABLED(CONFIG_NVME_TARGET_FDP)) {
+		switch (req->cmd->common.opcode) {
+		case nvme_cmd_io_mgmt_recv:
+			req->execute = nvmet_execute_io_mgmt_recv;
+			return 0;
+		case nvme_cmd_io_mgmt_send:
+			req->execute = nvmet_execute_io_mgmt_send;
+			return 0;
+		}
 	}
 
 	switch (req->ns->csi) {

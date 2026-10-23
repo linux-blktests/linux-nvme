@@ -103,6 +103,8 @@ struct nvmet_fdp {
 	u64			runs;
 	struct request_queue	*backend_q;
 	struct nvme_ctrl	*backend_ctrl;
+	u32			backend_nsid;
+	u16			backend_endgid;
 };
 
 struct nvmet_ns {
@@ -1003,6 +1005,8 @@ void nvmet_fdp_exit_ns(struct nvmet_ns *ns);
 bool nvmet_fdp_subsys_configured(struct nvmet_subsys *subsys);
 u16 nvmet_set_feat_fdp(struct nvmet_req *req);
 u16 nvmet_get_feat_fdp(struct nvmet_req *req);
+void nvmet_execute_io_mgmt_recv(struct nvmet_req *req);
+void nvmet_execute_io_mgmt_send(struct nvmet_req *req);
 #else
 static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
 {
@@ -1026,6 +1030,14 @@ static inline u16 nvmet_set_feat_fdp(struct nvmet_req *req)
 static inline u16 nvmet_get_feat_fdp(struct nvmet_req *req)
 {
 	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+}
+static inline void nvmet_execute_io_mgmt_recv(struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+}
+static inline void nvmet_execute_io_mgmt_send(struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
 }
 #endif
 
