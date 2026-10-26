@@ -31,6 +31,7 @@
  * SOFTWARE.
  */
 
+#include <crypto/sha2.h>
 #include <linux/module.h>
 
 #include <net/tcp.h>
@@ -327,6 +328,8 @@ void tls_ctx_free(struct sock *sk, struct tls_context *ctx)
 
 	memzero_explicit(&ctx->crypto_send, sizeof(ctx->crypto_send));
 	memzero_explicit(&ctx->crypto_recv, sizeof(ctx->crypto_recv));
+	memzero_explicit(&ctx->tx_secret, sizeof(ctx->tx_secret));
+	memzero_explicit(&ctx->rx_secret, sizeof(ctx->rx_secret));
 	mutex_destroy(&ctx->tx_lock);
 
 	if (sk)
@@ -759,8 +762,16 @@ static int do_tls_setsockopt_conf(struct sock *sk, sockptr_t optval,
 		ctx->rx_conf = conf;
 	update_sk_prot(sk, ctx);
 
-	if (update)
+	if (update) {
+		/* The registered secret no longer matches the key. The RX
+		 * secret also needs the TX one, see do_tls_setsockopt_secret().
+		 */
+		if (tx)
+			memzero_explicit(&ctx->tx_secret,
+					 sizeof(ctx->tx_secret));
+		memzero_explicit(&ctx->rx_secret, sizeof(ctx->rx_secret));
 		return 0;
+	}
 
 	if (tx) {
 		ctx->sk_write_space = sk->sk_write_space;
@@ -859,6 +870,72 @@ static int do_tls_setsockopt_tx_payload_len(struct sock *sk, sockptr_t optval,
 	return 0;
 }
 
+/* Length of the TLS 1.3 traffic secret for @cipher_type, the size of
+ * its hash. 0 if KeyUpdate is not supported for the cipher.
+ */
+static int tls_traffic_secret_len(u16 cipher_type)
+{
+	switch (cipher_type) {
+	case TLS_CIPHER_AES_GCM_128:
+	case TLS_CIPHER_AES_CCM_128:
+	case TLS_CIPHER_CHACHA20_POLY1305:
+		return SHA256_DIGEST_SIZE;
+	case TLS_CIPHER_AES_GCM_256:
+		return SHA384_DIGEST_SIZE;
+	default:
+		return 0;
+	}
+}
+
+static int do_tls_setsockopt_secret(struct sock *sk, sockptr_t optval,
+				    unsigned int optlen, int tx)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	struct tls_crypto_info *crypto_info;
+	struct tls_traffic_secret *secret;
+	int len;
+
+	if (tx) {
+		crypto_info = &ctx->crypto_send.info;
+		secret = &ctx->tx_secret;
+	} else {
+		crypto_info = &ctx->crypto_recv.info;
+		secret = &ctx->rx_secret;
+	}
+
+	/* The key must be installed first: its cipher selects the hash */
+	if (!TLS_CRYPTO_INFO_READY(crypto_info) ||
+	    crypto_info->version != TLS_1_3_VERSION)
+		return -EINVAL;
+
+	if ((tx ? ctx->tx_conf : ctx->rx_conf) != TLS_SW)
+		return -EOPNOTSUPP;
+
+	len = tls_traffic_secret_len(crypto_info->cipher_type);
+	if (!len)
+		return -EOPNOTSUPP;
+
+	if (sockptr_is_null(optval) || optlen != len)
+		return -EINVAL;
+
+	/* A received KeyUpdate may ask for one in reply. The kernel
+	 * consumes the record, so only the kernel can send the reply.
+	 */
+	if (!tx && !ctx->tx_secret.len)
+		return -EINVAL;
+
+	if (secret->len)
+		return -EBUSY;
+
+	if (copy_from_sockptr(secret->data, optval, len)) {
+		memzero_explicit(secret->data, sizeof(secret->data));
+		return -EFAULT;
+	}
+	secret->len = len;
+
+	return 0;
+}
+
 static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 			     unsigned int optlen)
 {
@@ -883,6 +960,13 @@ static int do_tls_setsockopt(struct sock *sk, int optname, sockptr_t optval,
 	case TLS_TX_MAX_PAYLOAD_LEN:
 		lock_sock(sk);
 		rc = do_tls_setsockopt_tx_payload_len(sk, optval, optlen);
+		release_sock(sk);
+		break;
+	case TLS_TX_TRAFFIC_SECRET:
+	case TLS_RX_TRAFFIC_SECRET:
+		lock_sock(sk);
+		rc = do_tls_setsockopt_secret(sk, optval, optlen,
+					      optname == TLS_TX_TRAFFIC_SECRET);
 		release_sock(sk);
 		break;
 	default:
