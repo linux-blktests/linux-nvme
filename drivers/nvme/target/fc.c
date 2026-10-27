@@ -1271,15 +1271,11 @@ nvmet_fc_portentry_bind(struct nvmet_fc_tgtport *tgtport,
 static void
 nvmet_fc_portentry_unbind(struct nvmet_fc_port_entry *pe)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&nvmet_fc_tgtlock, flags);
 	if (pe->tgtport) {
 		nvmet_fc_tgtport_put(pe->tgtport);
 		pe->tgtport->pe = NULL;
 	}
 	list_del(&pe->pe_list);
-	spin_unlock_irqrestore(&nvmet_fc_tgtlock, flags);
 }
 
 /*
@@ -2922,7 +2918,6 @@ nvmet_fc_remove_port(struct nvmet_port *port)
 	spin_lock_irqsave(&nvmet_fc_tgtlock, flags);
 	if (pe->tgtport && nvmet_fc_tgtport_get(pe->tgtport))
 		tgtport = pe->tgtport;
-	spin_unlock_irqrestore(&nvmet_fc_tgtlock, flags);
 
 	nvmet_fc_portentry_unbind(pe);
 
@@ -2931,6 +2926,8 @@ nvmet_fc_remove_port(struct nvmet_port *port)
 		__nvmet_fc_free_assocs(tgtport);
 		nvmet_fc_tgtport_put(tgtport);
 	}
+
+	spin_unlock_irqrestore(&nvmet_fc_tgtlock, flags);
 
 	kfree(pe);
 }
