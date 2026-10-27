@@ -958,8 +958,9 @@ static void nvme_unmap_data(struct request *req)
 		attrs |= DMA_ATTR_MMIO;
 	}
 
-	if (!blk_rq_dma_unmap(req, dma_dev, &iod->dma_state, iod->total_len,
-			      map)) {
+	/* IOVA mappings cover the full request even if PRP setup fails. */
+	if (!blk_rq_dma_unmap(req, dma_dev, &iod->dma_state,
+			      dma_iova_size(&iod->dma_state), map)) {
 		if (nvme_pci_cmd_use_sgl(&iod->cmd))
 			nvme_free_sgls(req, &iod->cmd.common.dptr.sgl,
 			               iod->descriptors[0], attrs);
