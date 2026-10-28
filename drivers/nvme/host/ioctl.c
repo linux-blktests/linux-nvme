@@ -200,7 +200,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	struct request *req;
 	struct bio *bio;
 	u32 effects;
-	int ret;
+	int ret, unmap_ret = 0;
 
 	req = nvme_alloc_user_request(q, cmd, 0, 0);
 	if (IS_ERR(req))
@@ -221,12 +221,14 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	ret = nvme_execute_rq(req, false);
 	if (result)
 		*result = le64_to_cpu(nvme_req(req)->result.u64);
-	if (bio)
-		blk_rq_unmap_user(bio);
 	blk_mq_free_request(req);
 
 	if (effects)
 		nvme_passthru_end(ctrl, ns, effects, cmd, ret);
+	if (bio)
+		unmap_ret = blk_rq_unmap_user(bio);
+	if (!ret)
+		ret = unmap_ret;
 	return ret;
 
 out_free_req:
@@ -437,9 +439,12 @@ static void nvme_uring_task_cb(struct io_tw_req tw_req, io_tw_token_t tw)
 {
 	struct io_uring_cmd *ioucmd = io_uring_cmd_from_tw(tw_req);
 	struct nvme_uring_cmd_pdu *pdu = nvme_uring_cmd_pdu(ioucmd);
+	int ret = 0;
 
 	if (pdu->bio)
-		blk_rq_unmap_user(pdu->bio);
+		ret = blk_rq_unmap_user(pdu->bio);
+	if (!pdu->status)
+		pdu->status = ret;
 	io_uring_cmd_done32(ioucmd, pdu->status, pdu->result,
 			    IO_URING_CMD_TASK_WORK_ISSUE_FLAGS);
 }
@@ -469,12 +474,18 @@ static enum rq_end_io_ret nvme_uring_cmd_end_io(struct request *req,
 	 */
 	if (blk_rq_is_poll(req) && iob &&
 	    iob->poll_ctx == io_uring_cmd_ctx_handle(ioucmd)) {
+		int ret = 0;
+
+		blk_mq_free_request(req);
 		if (pdu->bio)
-			blk_rq_unmap_user(pdu->bio);
+			ret = blk_rq_unmap_user(pdu->bio);
+		if (!pdu->status)
+			pdu->status = ret;
 		io_uring_cmd_done32(ioucmd, pdu->status, pdu->result, 0);
-	} else {
-		io_uring_cmd_do_in_task_lazy(ioucmd, nvme_uring_task_cb);
+		return RQ_END_IO_NONE;
 	}
+
+	io_uring_cmd_do_in_task_lazy(ioucmd, nvme_uring_task_cb);
 	return RQ_END_IO_FREE;
 }
 
