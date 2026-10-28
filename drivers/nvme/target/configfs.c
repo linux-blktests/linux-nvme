@@ -83,9 +83,6 @@ static ssize_t nvmet_addr_adrfam_store(struct config_item *item,
 	struct nvmet_port *port = to_nvmet_port(item);
 	int i;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
 	for (i = 1; i < ARRAY_SIZE(nvmet_addr_family); i++) {
 		if (sysfs_streq(page, nvmet_addr_family[i].name))
 			goto found;
@@ -95,7 +92,11 @@ static ssize_t nvmet_addr_adrfam_store(struct config_item *item,
 	return -EINVAL;
 
 found:
-	port->disc_addr.adrfam = nvmet_addr_family[i].type;
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->disc_addr.adrfam = nvmet_addr_family[i].type;
+	}
 	return count;
 }
 
@@ -120,10 +121,11 @@ static ssize_t nvmet_addr_portid_store(struct config_item *item,
 		return -EINVAL;
 	}
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
-	port->disc_addr.portid = cpu_to_le16(portid);
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->disc_addr.portid = cpu_to_le16(portid);
+	}
 	return count;
 }
 
@@ -141,17 +143,21 @@ static ssize_t nvmet_addr_traddr_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
+	char traddr[NVMF_TRADDR_SIZE + 1];
 
 	if (count > NVMF_TRADDR_SIZE) {
 		pr_err("Invalid value '%s' for traddr\n", page);
 		return -EINVAL;
 	}
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
-	if (sscanf(page, "%s\n", port->disc_addr.traddr) != 1)
+	if (sscanf(page, "%s\n", traddr) != 1)
 		return -EINVAL;
+
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		strscpy(port->disc_addr.traddr, traddr);
+	}
 	return count;
 }
 
@@ -186,11 +192,7 @@ static ssize_t nvmet_addr_treq_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
-	u8 treq = nvmet_port_disc_addr_treq_mask(port);
 	int i;
-
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
 
 	for (i = 0; i < ARRAY_SIZE(nvmet_addr_treq); i++) {
 		if (sysfs_streq(page, nvmet_addr_treq[i].name))
@@ -201,22 +203,29 @@ static ssize_t nvmet_addr_treq_store(struct config_item *item,
 	return -EINVAL;
 
 found:
-	if (port->disc_addr.trtype == NVMF_TRTYPE_TCP &&
-	    port->disc_addr.tsas.tcp.sectype == NVMF_TCP_SECTYPE_TLS13) {
-		switch (nvmet_addr_treq[i].type) {
-		case NVMF_TREQ_NOT_SPECIFIED:
-			pr_debug("treq '%s' not allowed for TLS1.3\n",
-				 nvmet_addr_treq[i].name);
-			return -EINVAL;
-		case NVMF_TREQ_NOT_REQUIRED:
-			pr_warn("Allow non-TLS connections while TLS1.3 is enabled\n");
-			break;
-		default:
-			break;
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		u8 treq;
+
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		treq = nvmet_port_disc_addr_treq_mask(port);
+		if (port->disc_addr.trtype == NVMF_TRTYPE_TCP &&
+		    port->disc_addr.tsas.tcp.sectype == NVMF_TCP_SECTYPE_TLS13) {
+			switch (nvmet_addr_treq[i].type) {
+			case NVMF_TREQ_NOT_SPECIFIED:
+				pr_debug("treq '%s' not allowed for TLS1.3\n",
+					 nvmet_addr_treq[i].name);
+				return -EINVAL;
+			case NVMF_TREQ_NOT_REQUIRED:
+				pr_warn("Allow non-TLS connections while TLS1.3 is enabled\n");
+				break;
+			default:
+				break;
+			}
 		}
+		treq |= nvmet_addr_treq[i].type;
+		port->disc_addr.treq = treq;
 	}
-	treq |= nvmet_addr_treq[i].type;
-	port->disc_addr.treq = treq;
 	return count;
 }
 
@@ -234,16 +243,20 @@ static ssize_t nvmet_addr_trsvcid_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
+	char trsvcid[NVMF_TRSVCID_SIZE + 1];
 
 	if (count > NVMF_TRSVCID_SIZE) {
 		pr_err("Invalid value '%s' for trsvcid\n", page);
 		return -EINVAL;
 	}
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
-	if (sscanf(page, "%s\n", port->disc_addr.trsvcid) != 1)
+	if (sscanf(page, "%s\n", trsvcid) != 1)
 		return -EINVAL;
+
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		strscpy(port->disc_addr.trsvcid, trsvcid);
+	}
 	return count;
 }
 
@@ -261,14 +274,17 @@ static ssize_t nvmet_param_inline_data_size_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
-	int ret;
+	int ret, inline_data_size;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-	ret = kstrtoint(page, 0, &port->inline_data_size);
+	ret = kstrtoint(page, 0, &inline_data_size);
 	if (ret) {
 		pr_err("Invalid value '%s' for inline_data_size\n", page);
 		return -EINVAL;
+	}
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->inline_data_size = inline_data_size;
 	}
 	return count;
 }
@@ -287,14 +303,17 @@ static ssize_t nvmet_param_max_queue_size_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
-	int ret;
+	int ret, max_queue_size;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-	ret = kstrtoint(page, 0, &port->max_queue_size);
+	ret = kstrtoint(page, 0, &max_queue_size);
 	if (ret) {
 		pr_err("Invalid value '%s' for max_queue_size\n", page);
 		return -EINVAL;
+	}
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->max_queue_size = max_queue_size;
 	}
 	return count;
 }
@@ -314,15 +333,17 @@ static ssize_t nvmet_param_mdts_store(struct config_item *item,
 	struct nvmet_port *port = to_nvmet_port(item);
 	int ret, mdts;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
 	ret = kstrtoint(page, 0, &mdts);
 	if (ret || mdts < 0 || mdts > NVMET_MAX_MDTS) {
 		pr_err("Invalid value '%s' for mdts, should be 0-%d\n",
 		       page, NVMET_MAX_MDTS);
 		return -EINVAL;
 	}
-	port->mdts = mdts;
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->mdts = mdts;
+	}
 	return count;
 }
 
@@ -346,10 +367,11 @@ static ssize_t nvmet_param_pi_enable_store(struct config_item *item,
 	if (kstrtobool(page, &val))
 		return -EINVAL;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
-	port->pi_enable = val;
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		port->pi_enable = val;
+	}
 	return count;
 }
 
@@ -389,9 +411,6 @@ static ssize_t nvmet_addr_trtype_store(struct config_item *item,
 	struct nvmet_port *port = to_nvmet_port(item);
 	int i;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
-
 	for (i = 0; i < ARRAY_SIZE(nvmet_transport); i++) {
 		if (sysfs_streq(page, nvmet_transport[i].name))
 			goto found;
@@ -401,12 +420,16 @@ static ssize_t nvmet_addr_trtype_store(struct config_item *item,
 	return -EINVAL;
 
 found:
-	memset(&port->disc_addr.tsas, 0, NVMF_TSAS_SIZE);
-	port->disc_addr.trtype = nvmet_transport[i].type;
-	if (port->disc_addr.trtype == NVMF_TRTYPE_RDMA)
-		nvmet_port_init_tsas_rdma(port);
-	else if (port->disc_addr.trtype == NVMF_TRTYPE_TCP)
-		nvmet_port_init_tsas_tcp(port, NVMF_TCP_SECTYPE_NONE);
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
+		memset(&port->disc_addr.tsas, 0, NVMF_TSAS_SIZE);
+		port->disc_addr.trtype = nvmet_transport[i].type;
+		if (port->disc_addr.trtype == NVMF_TRTYPE_RDMA)
+			nvmet_port_init_tsas_rdma(port);
+		else if (port->disc_addr.trtype == NVMF_TRTYPE_TCP)
+			nvmet_port_init_tsas_tcp(port, NVMF_TCP_SECTYPE_NONE);
+	}
 	return count;
 }
 
@@ -468,52 +491,55 @@ static ssize_t nvmet_addr_tsas_store(struct config_item *item,
 		const char *page, size_t count)
 {
 	struct nvmet_port *port = to_nvmet_port(item);
-	u8 treq = nvmet_port_disc_addr_treq_mask(port);
-	u8 sectype, qptype;
 
-	if (nvmet_is_port_enabled(port, __func__))
-		return -EACCES;
+	scoped_guard(rwsem_write, &nvmet_config_sem) {
+		u8 treq = nvmet_port_disc_addr_treq_mask(port);
+		u8 sectype, qptype;
 
-	if (port->disc_addr.trtype == NVMF_TRTYPE_RDMA) {
-		qptype = nvmet_addr_tsas_rdma_store(page);
-		if (qptype == port->disc_addr.tsas.rdma.qptype)
-			return count;
-	} else if (port->disc_addr.trtype == NVMF_TRTYPE_TCP) {
-		sectype = nvmet_addr_tsas_tcp_store(page);
-		if (sectype != NVMF_TCP_SECTYPE_INVALID)
-			goto found;
-	}
+		if (nvmet_is_port_enabled(port, __func__))
+			return -EACCES;
 
-	pr_err("Invalid value '%s' for tsas\n", page);
-	return -EINVAL;
+		if (port->disc_addr.trtype == NVMF_TRTYPE_RDMA) {
+			qptype = nvmet_addr_tsas_rdma_store(page);
+			if (qptype == port->disc_addr.tsas.rdma.qptype)
+				return count;
+		} else if (port->disc_addr.trtype == NVMF_TRTYPE_TCP) {
+			sectype = nvmet_addr_tsas_tcp_store(page);
+			if (sectype != NVMF_TCP_SECTYPE_INVALID)
+				goto found;
+		}
+
+		pr_err("Invalid value '%s' for tsas\n", page);
+		return -EINVAL;
 
 found:
-	if (sectype == NVMF_TCP_SECTYPE_TLS13) {
-		if (!IS_ENABLED(CONFIG_NVME_TARGET_TCP_TLS)) {
-			pr_err("TLS is not supported\n");
-			return -EINVAL;
+		if (sectype == NVMF_TCP_SECTYPE_TLS13) {
+			if (!IS_ENABLED(CONFIG_NVME_TARGET_TCP_TLS)) {
+				pr_err("TLS is not supported\n");
+				return -EINVAL;
+			}
+			if (!port->keyring) {
+				pr_err("TLS keyring not configured\n");
+				return -EINVAL;
+			}
 		}
-		if (!port->keyring) {
-			pr_err("TLS keyring not configured\n");
-			return -EINVAL;
+
+		nvmet_port_init_tsas_tcp(port, sectype);
+		/*
+		 * If TLS is enabled TREQ should be set to 'required' per default
+		 */
+		if (sectype == NVMF_TCP_SECTYPE_TLS13) {
+			u8 sc = nvmet_port_disc_addr_treq_secure_channel(port);
+
+			if (sc == NVMF_TREQ_NOT_SPECIFIED)
+				treq |= NVMF_TREQ_REQUIRED;
+			else
+				treq |= sc;
+		} else {
+			treq |= NVMF_TREQ_NOT_SPECIFIED;
 		}
+		port->disc_addr.treq = treq;
 	}
-
-	nvmet_port_init_tsas_tcp(port, sectype);
-	/*
-	 * If TLS is enabled TREQ should be set to 'required' per default
-	 */
-	if (sectype == NVMF_TCP_SECTYPE_TLS13) {
-		u8 sc = nvmet_port_disc_addr_treq_secure_channel(port);
-
-		if (sc == NVMF_TREQ_NOT_SPECIFIED)
-			treq |= NVMF_TREQ_REQUIRED;
-		else
-			treq |= sc;
-	} else {
-		treq |= NVMF_TREQ_NOT_SPECIFIED;
-	}
-	port->disc_addr.treq = treq;
 	return count;
 }
 
