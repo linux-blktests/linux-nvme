@@ -136,8 +136,10 @@ NVMET_DEBUGFS_ATTR(nvmet_ctrl_host_traddr);
 static int nvmet_ctrl_tls_key_show(struct seq_file *m, void *p)
 {
 	struct nvmet_ctrl *ctrl = m->private;
-	key_serial_t keyid = nvmet_queue_tls_keyid(ctrl->sqs[0]);
+	key_serial_t keyid = 0;
 
+	if (ctrl->sqs[0])
+		keyid = nvmet_queue_tls_keyid(ctrl->sqs[0]);
 	seq_printf(m, "%08x\n", keyid);
 	return 0;
 }
