@@ -1004,6 +1004,8 @@ static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
 }
 int nvmet_fdp_init_ns(struct nvmet_ns *ns);
 void nvmet_fdp_exit_ns(struct nvmet_ns *ns);
+u16 nvmet_set_feat_fdp(struct nvmet_req *req);
+u16 nvmet_get_feat_fdp(struct nvmet_req *req);
 #else
 static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
 {
@@ -1015,6 +1017,14 @@ static inline int nvmet_fdp_init_ns(struct nvmet_ns *ns)
 }
 static inline void nvmet_fdp_exit_ns(struct nvmet_ns *ns)
 {
+}
+static inline u16 nvmet_set_feat_fdp(struct nvmet_req *req)
+{
+	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+}
+static inline u16 nvmet_get_feat_fdp(struct nvmet_req *req)
+{
+	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 }
 #endif
 
