@@ -256,6 +256,7 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	struct bio *bio;
 	struct scatterlist *sg;
 	struct blk_plug plug;
+	u8 write_stream = 0;
 	sector_t sector;
 	blk_opf_t opf;
 	int i, rc;
@@ -300,6 +301,11 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 	bio->bi_iter.bi_sector = sector;
 	bio->bi_private = req;
 	bio->bi_end_io = nvmet_bio_done;
+	if (req->cmd->rw.opcode == nvme_cmd_write &&
+	    nvmet_fdp_enabled(req->ns)) {
+		write_stream = nvmet_fdp_write_stream(req);
+		bio->bi_write_stream = write_stream;
+	}
 
 	blk_start_plug(&plug);
 	if (req->metadata_len)
@@ -323,6 +329,7 @@ static void nvmet_bdev_execute_rw(struct nvmet_req *req)
 			bio = bio_alloc(req->ns->bdev, bio_max_segs(sg_cnt),
 					opf, GFP_KERNEL);
 			bio->bi_iter.bi_sector = sector;
+			bio->bi_write_stream = write_stream;
 
 			bio_chain(bio, prev);
 			submit_bio(prev);
