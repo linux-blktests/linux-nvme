@@ -302,6 +302,19 @@ Description:
 		enabled for this namespace. Accepts boolean value. The
 		namespace must be disabled before modification.
 
+What:		/config/nvmet/subsystems/NAME/namespaces/NSID/fdp_enable
+Date:		October 2026
+KernelVersion:	7.4
+Contact:	Guixin Liu <kanie@linux.alibaba.com>
+Description:
+		Shows or sets whether Flexible Data Placement bridging is
+		enabled for this namespace. Accepts boolean value and
+		requires CONFIG_NVME_TARGET_FDP. The namespace must be
+		disabled before modification. Enabling requires a backing
+		NVMe namespace that reports write streams and an identity
+		mapped placement identifier list, which is verified when
+		the namespace is enabled.
+
 What:		/config/nvmet/subsystems/NAME/attr_vendor_id
 What:		/config/nvmet/subsystems/NAME/attr_subsys_vendor_id
 Date:		January 2025
