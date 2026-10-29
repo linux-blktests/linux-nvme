@@ -381,7 +381,8 @@ static void nvmet_get_cmd_effects_admin(struct nvmet_ctrl *ctrl,
 		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
 }
 
-static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
+static void nvmet_get_cmd_effects_nvm(struct nvmet_req *req,
+				      struct nvme_effects_log *log)
 {
 	log->iocs[nvme_cmd_read] =
 	log->iocs[nvme_cmd_flush] =
@@ -394,6 +395,16 @@ static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
 	log->iocs[nvme_cmd_write] =
 	log->iocs[nvme_cmd_write_zeroes] =
 		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP | NVME_CMD_EFFECTS_LBCC);
+	/*
+	 * This log page has no namespace context (req->ns is always
+	 * NULL), so the advertisement can only follow the subsystem-wide
+	 * FDP state, just like FDPS and the Features log page.
+	 */
+	if (nvmet_req_subsys(req)->nr_ns_fdp_enabled) {
+		log->iocs[nvme_cmd_io_mgmt_recv] =
+		log->iocs[nvme_cmd_io_mgmt_send] =
+			cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
+	}
 }
 
 static void nvmet_get_cmd_effects_zns(struct nvme_effects_log *log)
@@ -420,7 +431,7 @@ static void nvmet_execute_get_log_cmd_effects_ns(struct nvmet_req *req)
 	switch (req->cmd->get_log_page.csi) {
 	case NVME_CSI_NVM:
 		nvmet_get_cmd_effects_admin(ctrl, log);
-		nvmet_get_cmd_effects_nvm(log);
+		nvmet_get_cmd_effects_nvm(req, log);
 		break;
 	case NVME_CSI_ZNS:
 		if (!IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
@@ -428,7 +439,7 @@ static void nvmet_execute_get_log_cmd_effects_ns(struct nvmet_req *req)
 			goto free;
 		}
 		nvmet_get_cmd_effects_admin(ctrl, log);
-		nvmet_get_cmd_effects_nvm(log);
+		nvmet_get_cmd_effects_nvm(req, log);
 		nvmet_get_cmd_effects_zns(log);
 		break;
 	default:
