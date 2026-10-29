@@ -622,19 +622,29 @@ int nvmet_ns_enable(struct nvmet_ns *ns)
 			goto out_dev_put;
 	}
 
+	if (nvmet_fdp_enabled(ns)) {
+		ret = nvmet_fdp_init_ns(ns);
+		if (ret)
+			goto out_pr_exit;
+	}
+
 	ret = percpu_ref_init(&ns->ref, nvmet_destroy_namespace, 0, GFP_KERNEL);
 	if (ret)
-		goto out_pr_exit;
+		goto out_fdp_exit;
 
 	nvmet_ns_changed(subsys, ns->nsid);
 	ns->enabled = true;
 	xa_set_mark(&subsys->namespaces, ns->nsid, NVMET_NS_ENABLED);
 	nvmet_debugfs_ns_setup(ns);
 	set_bit(NVMET_NS_IO_LIVE, &ns->flags);
+	if (nvmet_fdp_enabled(ns))
+		subsys->nr_ns_fdp_enabled++;
 	ret = 0;
 out_unlock:
 	mutex_unlock(&subsys->lock);
 	return ret;
+out_fdp_exit:
+	nvmet_fdp_exit_ns(ns);
 out_pr_exit:
 	if (ns->pr.enable)
 		nvmet_pr_exit_ns(ns);
@@ -680,10 +690,14 @@ void nvmet_ns_disable(struct nvmet_ns *ns)
 	if (ns->pr.enable)
 		nvmet_pr_exit_ns(ns);
 
+	nvmet_fdp_exit_ns(ns);
+
 	mutex_lock(&subsys->lock);
 	nvmet_ns_changed(subsys, ns->nsid);
 	nvmet_ns_dev_disable(ns);
 	ns->enabled = false;
+	if (nvmet_fdp_enabled(ns))
+		subsys->nr_ns_fdp_enabled--;
 	mutex_unlock(&subsys->lock);
 }
 
