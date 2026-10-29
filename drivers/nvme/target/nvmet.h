@@ -97,6 +97,17 @@ struct nvmet_pr_per_ctrl_ref {
 	uuid_t			hostid;
 };
 
+struct nvmet_fdp {
+	bool			enable;
+	u16			nruh;
+	u64			runs;
+	u8			ruht[U8_MAX];
+	struct request_queue	*backend_q;
+	struct nvme_ctrl	*backend_ctrl;
+	u32			backend_nsid;
+	u16			backend_endgid;
+};
+
 struct nvmet_ns {
 	struct percpu_ref	ref;
 	struct file		*bdev_file;
@@ -130,6 +141,9 @@ struct nvmet_ns {
 	u8			csi;
 	struct nvmet_pr		pr;
 	struct xarray		pr_per_ctrl_refs;
+#ifdef CONFIG_NVME_TARGET_FDP
+	struct nvmet_fdp	fdp;
+#endif
 #ifdef CONFIG_NVME_TARGET_DEBUGFS
 	struct dentry		*debugfs_dir;
 #endif
@@ -356,6 +370,7 @@ struct nvmet_subsys {
 	char			*model_number;
 	u32			ieee_oui;
 	char			*firmware_rev;
+	unsigned int		nr_ns_fdp_enabled;
 
 #ifdef CONFIG_NVME_TARGET_PASSTHRU
 	struct nvme_ctrl	*passthru_ctrl;
@@ -981,6 +996,82 @@ static inline void nvmet_pr_put_ns_pc_ref(struct nvmet_pr_per_ctrl_ref *pc_ref)
 {
 	percpu_ref_put(&pc_ref->ref);
 }
+
+#ifdef CONFIG_NVME_TARGET_FDP
+static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
+{
+	return ns->fdp.enable;
+}
+int nvmet_fdp_init_ns(struct nvmet_ns *ns);
+void nvmet_fdp_exit_ns(struct nvmet_ns *ns);
+u16 nvmet_set_feat_fdp(struct nvmet_req *req);
+u16 nvmet_get_feat_fdp(struct nvmet_req *req);
+void nvmet_execute_io_mgmt_recv(struct nvmet_req *req);
+void nvmet_execute_io_mgmt_send(struct nvmet_req *req);
+void nvmet_execute_get_log_page_fdp_configs(struct nvmet_req *req);
+void nvmet_fdp_log_forward(struct nvmet_req *req);
+
+/*
+ * Both sides of the bridge use identity mapped handles, so placement
+ * identifier i routes to backing write stream i+1; stream 0, the
+ * default, places the data without a directive.
+ */
+static inline u8 nvmet_fdp_write_stream(struct nvmet_req *req)
+{
+	u16 control = le16_to_cpu(req->cmd->rw.control);
+	u16 pid;
+
+	if ((control & 0xf0) != (NVME_RW_DTYPE_DPLCMT & 0xf0))
+		return 0;
+
+	pid = le32_to_cpu(req->cmd->rw.dsmgmt) >> 16;
+	if (pid >= req->ns->fdp.nruh)
+		return 0;
+
+	return pid + 1;
+}
+#else
+static inline bool nvmet_fdp_enabled(struct nvmet_ns *ns)
+{
+	return false;
+}
+static inline int nvmet_fdp_init_ns(struct nvmet_ns *ns)
+{
+	return -EINVAL;
+}
+static inline void nvmet_fdp_exit_ns(struct nvmet_ns *ns)
+{
+}
+static inline u16 nvmet_set_feat_fdp(struct nvmet_req *req)
+{
+	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+}
+static inline u16 nvmet_get_feat_fdp(struct nvmet_req *req)
+{
+	return NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+}
+static inline void nvmet_execute_io_mgmt_recv(struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+}
+static inline void nvmet_execute_io_mgmt_send(struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+}
+static inline void nvmet_execute_get_log_page_fdp_configs(
+		struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+}
+static inline void nvmet_fdp_log_forward(struct nvmet_req *req)
+{
+	nvmet_req_complete(req, NVME_SC_INVALID_FIELD | NVME_STATUS_DNR);
+}
+static inline u8 nvmet_fdp_write_stream(struct nvmet_req *req)
+{
+	return 0;
+}
+#endif
 
 /*
  * Data for the get_feature() and set_feature() operations of PCI target

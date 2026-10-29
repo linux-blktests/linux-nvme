@@ -220,6 +220,16 @@ static void nvmet_execute_get_supported_log_pages(struct nvmet_req *req)
 	logs->lids[NVME_LOG_FEATURES] = cpu_to_le32(NVME_LIDS_LSUPP);
 	logs->lids[NVME_LOG_RMI] = cpu_to_le32(NVME_LIDS_LSUPP);
 	logs->lids[NVME_LOG_RESERVATION] = cpu_to_le32(NVME_LIDS_LSUPP);
+	if (nvmet_req_subsys(req)->nr_ns_fdp_enabled) {
+		logs->lids[NVME_LOG_FDP_CONFIGS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_RUH_USAGE] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_STATS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_EVENTS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+	}
 
 	status = nvmet_copy_to_sgl(req, 0, logs, sizeof(*logs));
 	kfree(logs);
@@ -381,7 +391,8 @@ static void nvmet_get_cmd_effects_admin(struct nvmet_ctrl *ctrl,
 		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
 }
 
-static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
+static void nvmet_get_cmd_effects_nvm(struct nvmet_req *req,
+				      struct nvme_effects_log *log)
 {
 	log->iocs[nvme_cmd_read] =
 	log->iocs[nvme_cmd_flush] =
@@ -394,6 +405,16 @@ static void nvmet_get_cmd_effects_nvm(struct nvme_effects_log *log)
 	log->iocs[nvme_cmd_write] =
 	log->iocs[nvme_cmd_write_zeroes] =
 		cpu_to_le32(NVME_CMD_EFFECTS_CSUPP | NVME_CMD_EFFECTS_LBCC);
+	/*
+	 * This log page has no namespace context (req->ns is always
+	 * NULL), so the advertisement can only follow the subsystem-wide
+	 * FDP state, just like FDPS and the Features log page.
+	 */
+	if (nvmet_req_subsys(req)->nr_ns_fdp_enabled) {
+		log->iocs[nvme_cmd_io_mgmt_recv] =
+		log->iocs[nvme_cmd_io_mgmt_send] =
+			cpu_to_le32(NVME_CMD_EFFECTS_CSUPP);
+	}
 }
 
 static void nvmet_get_cmd_effects_zns(struct nvme_effects_log *log)
@@ -420,7 +441,7 @@ static void nvmet_execute_get_log_cmd_effects_ns(struct nvmet_req *req)
 	switch (req->cmd->get_log_page.csi) {
 	case NVME_CSI_NVM:
 		nvmet_get_cmd_effects_admin(ctrl, log);
-		nvmet_get_cmd_effects_nvm(log);
+		nvmet_get_cmd_effects_nvm(req, log);
 		break;
 	case NVME_CSI_ZNS:
 		if (!IS_ENABLED(CONFIG_BLK_DEV_ZONED)) {
@@ -428,7 +449,7 @@ static void nvmet_execute_get_log_cmd_effects_ns(struct nvmet_req *req)
 			goto free;
 		}
 		nvmet_get_cmd_effects_admin(ctrl, log);
-		nvmet_get_cmd_effects_nvm(log);
+		nvmet_get_cmd_effects_nvm(req, log);
 		nvmet_get_cmd_effects_zns(log);
 		break;
 	default:
@@ -600,6 +621,9 @@ static void nvmet_execute_get_log_page_features(struct nvmet_req *req)
 		cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_NSCPE);
 	features->fis[NVME_FEAT_RESV_MASK] =
 		cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_NSCPE);
+	if (nvmet_req_subsys(req)->nr_ns_fdp_enabled)
+		features->fis[NVME_FEAT_FDP] =
+			cpu_to_le32(NVME_FIS_FSUPP | NVME_FIS_EGSCPE);
 
 	status = nvmet_copy_to_sgl(req, 0, features, sizeof(*features));
 	kfree(features);
@@ -640,6 +664,12 @@ static void nvmet_execute_get_log_page(struct nvmet_req *req)
 		return nvmet_execute_get_log_page_rmi(req);
 	case NVME_LOG_RESERVATION:
 		return nvmet_execute_get_log_page_resv(req);
+	case NVME_LOG_FDP_CONFIGS:
+		return nvmet_execute_get_log_page_fdp_configs(req);
+	case NVME_LOG_FDP_RUH_USAGE:
+	case NVME_LOG_FDP_STATS:
+	case NVME_LOG_FDP_EVENTS:
+		return nvmet_fdp_log_forward(req);
 	}
 	pr_debug("unhandled lid %d on qid %d\n",
 	       req->cmd->get_log_page.lid, req->sq->qid);
@@ -699,6 +729,8 @@ static void nvmet_execute_identify_ctrl(struct nvmet_req *req)
 	ctratt = NVME_CTRL_ATTR_HID_128_BIT | NVME_CTRL_ATTR_TBKAS;
 	if (nvmet_is_pci_ctrl(ctrl))
 		ctratt |= NVME_CTRL_ATTR_RHII;
+	if (ctrl->subsys->nr_ns_fdp_enabled)
+		ctratt |= NVME_CTRL_ATTR_FDPS;
 	id->ctratt = cpu_to_le32(ctratt);
 
 	id->oacs = 0;
@@ -1081,6 +1113,7 @@ static void nvmet_execute_id_cs_indep(struct nvmet_req *req)
 	id->nstat = NVME_NSTAT_NRDY;
 	id->anagrpid = cpu_to_le32(req->ns->anagrpid);
 	id->nmic = NVME_NS_NMIC_SHARED;
+	id->endgid = cpu_to_le16(req->ns->nsid);
 	if (req->ns->readonly)
 		id->nsattr |= NVME_NS_ATTR_RO;
 	if (req->ns->bdev && bdev_rot(req->ns->bdev))
@@ -1382,6 +1415,9 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 	case NVME_FEAT_RESV_MASK:
 		status = nvmet_set_feat_resv_notif_mask(req, cdw11);
 		break;
+	case NVME_FEAT_FDP:
+		status = nvmet_set_feat_fdp(req);
+		break;
 	default:
 		req->error_loc = offsetof(struct nvme_common_command, cdw10);
 		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
@@ -1558,6 +1594,9 @@ void nvmet_execute_get_features(struct nvmet_req *req)
 		break;
 	case NVME_FEAT_RESV_MASK:
 		status = nvmet_get_feat_resv_notif_mask(req);
+		break;
+	case NVME_FEAT_FDP:
+		status = nvmet_get_feat_fdp(req);
 		break;
 	default:
 		req->error_loc =

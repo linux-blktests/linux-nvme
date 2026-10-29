@@ -967,6 +967,7 @@ enum nvme_opcode {
 	nvme_cmd_resv_acquire	= 0x11,
 	nvme_cmd_io_mgmt_recv	= 0x12,
 	nvme_cmd_resv_release	= 0x15,
+	nvme_cmd_io_mgmt_send	= 0x1d,
 	nvme_cmd_zone_mgmt_send	= 0x79,
 	nvme_cmd_zone_mgmt_recv	= 0x7a,
 	nvme_cmd_zone_append	= 0x7d,
@@ -989,6 +990,7 @@ enum nvme_opcode {
 		nvme_opcode_name(nvme_cmd_resv_acquire),	\
 		nvme_opcode_name(nvme_cmd_io_mgmt_recv),	\
 		nvme_opcode_name(nvme_cmd_resv_release),	\
+		nvme_opcode_name(nvme_cmd_io_mgmt_send),	\
 		nvme_opcode_name(nvme_cmd_zone_mgmt_send),	\
 		nvme_opcode_name(nvme_cmd_zone_mgmt_recv),	\
 		nvme_opcode_name(nvme_cmd_zone_append))
@@ -1245,6 +1247,23 @@ enum {
 	NVME_IO_MGMT_RECV_MO_RUHS	= 1,
 };
 
+enum {
+	NVME_IO_MGMT_SEND_MO_RUH_UPDATE	= 1,
+};
+
+struct nvme_io_mgmt_send_cmd {
+	__u8			opcode;
+	__u8			flags;
+	__le16			command_id;
+	__le32			nsid;
+	__le64			rsvd2[2];
+	union nvme_data_ptr	dptr;
+	__u8			mo;
+	__u8			rsvd10;
+	__le16			mos;
+	__le32			rsvd11[5];
+};
+
 struct nvme_fdp_ruh_status_desc {
 	__le16			pid;
 	__le16			ruhid;
@@ -1416,6 +1435,9 @@ enum {
 	NVME_LOG_FEATURES	= 0x12,
 	NVME_LOG_RMI		= 0x16,
 	NVME_LOG_FDP_CONFIGS	= 0x20,
+	NVME_LOG_FDP_RUH_USAGE	= 0x21,
+	NVME_LOG_FDP_STATS	= 0x22,
+	NVME_LOG_FDP_EVENTS	= 0x23,
 	NVME_LOG_DISC		= 0x70,
 	NVME_LOG_RESERVATION	= 0x80,
 	NVME_FWACT_REPL		= (0 << 3),
@@ -1437,6 +1459,7 @@ struct nvme_supported_features_log {
 
 enum {
 	NVME_FIS_FSUPP	= 1 << 0,
+	NVME_FIS_EGSCPE	= 1 << 23,
 	NVME_FIS_NSCPE	= 1 << 20,
 	NVME_FIS_CSCPE	= 1 << 21,
 };
@@ -2016,6 +2039,7 @@ struct nvme_command {
 		struct nvme_dbbuf dbbuf;
 		struct nvme_directive_cmd directive;
 		struct nvme_io_mgmt_recv_cmd imr;
+		struct nvme_io_mgmt_send_cmd ims;
 	};
 };
 
