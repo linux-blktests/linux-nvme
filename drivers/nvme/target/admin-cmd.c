@@ -220,6 +220,16 @@ static void nvmet_execute_get_supported_log_pages(struct nvmet_req *req)
 	logs->lids[NVME_LOG_FEATURES] = cpu_to_le32(NVME_LIDS_LSUPP);
 	logs->lids[NVME_LOG_RMI] = cpu_to_le32(NVME_LIDS_LSUPP);
 	logs->lids[NVME_LOG_RESERVATION] = cpu_to_le32(NVME_LIDS_LSUPP);
+	if (nvmet_req_subsys(req)->nr_ns_fdp_enabled) {
+		logs->lids[NVME_LOG_FDP_CONFIGS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_RUH_USAGE] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_STATS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+		logs->lids[NVME_LOG_FDP_EVENTS] =
+			cpu_to_le32(NVME_LIDS_LSUPP);
+	}
 
 	status = nvmet_copy_to_sgl(req, 0, logs, sizeof(*logs));
 	kfree(logs);
@@ -654,6 +664,12 @@ static void nvmet_execute_get_log_page(struct nvmet_req *req)
 		return nvmet_execute_get_log_page_rmi(req);
 	case NVME_LOG_RESERVATION:
 		return nvmet_execute_get_log_page_resv(req);
+	case NVME_LOG_FDP_CONFIGS:
+		return nvmet_execute_get_log_page_fdp_configs(req);
+	case NVME_LOG_FDP_RUH_USAGE:
+	case NVME_LOG_FDP_STATS:
+	case NVME_LOG_FDP_EVENTS:
+		return nvmet_fdp_log_forward(req);
 	}
 	pr_debug("unhandled lid %d on qid %d\n",
 	       req->cmd->get_log_page.lid, req->sq->qid);

@@ -542,3 +542,141 @@ free_id:
 	kfree(id);
 	return ret;
 }
+
+static void nvmet_fdp_configs_work(struct nvmet_req *req)
+{
+	u32 lsi = le16_to_cpu(req->cmd->get_log_page.lsi);
+	u64 lpo = nvmet_get_log_page_offset(req->cmd);
+	struct nvme_fdp_config_desc *desc;
+	struct nvme_fdp_config_log *log;
+	size_t dsze, total, avail, len;
+	struct nvmet_ns *ns;
+	u16 status = 0;
+	int i;
+
+	if (req->transfer_len > NVMET_FDP_MAX_TRANSFER_SIZE) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		goto out;
+	}
+
+	ns = nvmet_fdp_lookup_ns(req, lsi, true);
+	if (!ns) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		goto out;
+	}
+
+	dsze = ALIGN(struct_size(desc, ruhs, ns->fdp.nruh), 8);
+	total = sizeof(*log) + dsze;
+	len = max(total, req->transfer_len);
+
+	/* single configuration, 0's based */
+	log = kzalloc(len, GFP_KERNEL);
+	if (!log) {
+		status = NVME_SC_INTERNAL;
+		goto out_put;
+	}
+
+	log->numfdpc = 0;
+	log->ver = 0;
+	log->sze = cpu_to_le32(total);
+	desc = (void *)(log + 1);
+	desc->dsze = cpu_to_le16(dsze);
+	/* FDPCV set, FDPVWC clear, RGIF 0 for the single RG */
+	desc->fdpa = 1 << 7;
+	desc->nrg = cpu_to_le32(1);
+	desc->nruh = cpu_to_le16(ns->fdp.nruh);
+	desc->maxpids = cpu_to_le16(ns->fdp.nruh - 1);
+	desc->nns = cpu_to_le32(1);
+	desc->runs = cpu_to_le64(ns->fdp.runs);
+	for (i = 0; i < ns->fdp.nruh; i++)
+		desc->ruhs[i].ruht = ns->fdp.ruht[i];
+
+	if (lpo >= total) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		goto free_log;
+	}
+
+	/*
+	 * Serve the requested window of the complete log: a short read
+	 * gets the true prefix, and a nonzero Log Page Offset gets the
+	 * bytes at that offset, with zeroes only past the end of the log.
+	 */
+	avail = total - lpo;
+	memmove(log, (void *)log + lpo, avail);
+	memset((void *)log + avail, 0, len - avail);
+	status = nvmet_copy_to_sgl(req, 0, log, req->transfer_len);
+free_log:
+	kfree(log);
+out_put:
+	percpu_ref_put(&ns->ref);
+out:
+	nvmet_req_complete(req, status);
+}
+
+void nvmet_execute_get_log_page_fdp_configs(struct nvmet_req *req)
+{
+	nvmet_fdp_defer(req, nvmet_fdp_configs_work);
+}
+
+/*
+ * Forward an FDP log page that the backing controller owns, addressed
+ * by the Endurance Group Identifier of the backing endurance group.
+ */
+static void nvmet_fdp_log_forward_work(struct nvmet_req *req)
+{
+	struct nvme_command c = {};
+	struct nvmet_ns *ns;
+	u16 status = 0;
+	void *buf;
+	u32 numd;
+	int ret;
+
+	if (!req->transfer_len ||
+	    req->transfer_len > NVMET_FDP_MAX_TRANSFER_SIZE) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		goto out;
+	}
+
+	ns = nvmet_fdp_lookup_ns(req,
+				 le16_to_cpu(req->cmd->get_log_page.lsi),
+				 true);
+	if (!ns) {
+		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
+		goto out;
+	}
+
+	buf = kzalloc(req->transfer_len, GFP_KERNEL);
+	if (!buf) {
+		status = NVME_SC_INTERNAL;
+		goto out_put;
+	}
+
+	c = *req->cmd;
+	c.get_log_page.nsid = cpu_to_le32(0);
+	c.get_log_page.lsi = cpu_to_le16(ns->fdp.backend_endgid);
+	c.common.metadata = 0;
+	c.common.dptr = (union nvme_data_ptr){};
+	/* the backend must not transfer more than the staging buffer holds */
+	numd = nvme_bytes_to_numd(req->transfer_len);
+	c.get_log_page.numdl = cpu_to_le16(numd);
+	c.get_log_page.numdu = cpu_to_le16(numd >> 16);
+	ret = nvme_submit_sync_cmd(ns->fdp.backend_ctrl->admin_q, &c, buf,
+				   req->transfer_len);
+	if (ret) {
+		status = ret > 0 ? ret : NVME_SC_INTERNAL;
+		goto free;
+	}
+
+	status = nvmet_copy_to_sgl(req, 0, buf, req->transfer_len);
+free:
+	kfree(buf);
+out_put:
+	percpu_ref_put(&ns->ref);
+out:
+	nvmet_req_complete(req, status);
+}
+
+void nvmet_fdp_log_forward(struct nvmet_req *req)
+{
+	nvmet_fdp_defer(req, nvmet_fdp_log_forward_work);
+}
