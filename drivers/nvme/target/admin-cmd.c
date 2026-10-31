@@ -542,17 +542,23 @@ static void nvmet_execute_get_log_page_ana(struct nvmet_req *req)
 	u32 grpid;
 	u16 ngrps = 0;
 	u16 status;
+	u16 header_status;
 
 	status = NVME_SC_INTERNAL;
 	desc = kmalloc_flex(*desc, nsids, NVMET_MAX_NAMESPACES);
 	if (!desc)
 		goto out;
 
+	status = NVME_SC_SUCCESS;
+
 	down_read(&nvmet_ana_sem);
 	for (grpid = 1; grpid <= NVMET_MAX_ANAGRPS; grpid++) {
 		if (!nvmet_ana_group_enabled[grpid])
 			continue;
 		len = nvmet_format_ana_group(req, grpid, desc);
+		if (offset > req->transfer_len || len > req->transfer_len - offset)
+			break;
+
 		status = nvmet_copy_to_sgl(req, offset, desc, len);
 		if (status)
 			break;
@@ -572,7 +578,9 @@ static void nvmet_execute_get_log_page_ana(struct nvmet_req *req)
 	kfree(desc);
 
 	/* copy the header last once we know the number of groups */
-	status = nvmet_copy_to_sgl(req, 0, &hdr, sizeof(hdr));
+	header_status = nvmet_copy_to_sgl(req, 0, &hdr, sizeof(hdr));
+	if (!status)
+		status = header_status;
 out:
 	nvmet_req_complete(req, status);
 }
