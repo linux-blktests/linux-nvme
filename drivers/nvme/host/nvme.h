@@ -705,6 +705,11 @@ static inline struct request *nvme_find_rq(struct blk_mq_tags *tags,
 			tag, genctr, nvme_genctr_mask(nvme_req(rq)->genctr));
 		return NULL;
 	}
+	if (unlikely(blk_mq_rq_state(rq) != MQ_RQ_IN_FLIGHT)) {
+		dev_err(nvme_req(rq)->ctrl->device,
+			"completion for request %#x not in flight\n", tag);
+		return NULL;
+	}
 	return rq;
 }
 
