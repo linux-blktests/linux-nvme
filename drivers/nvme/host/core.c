@@ -4738,10 +4738,25 @@ void nvme_remove_namespaces(struct nvme_ctrl *ctrl)
 	/* this is a no-op when called from the controller reset handler */
 	nvme_change_ctrl_state(ctrl, NVME_CTRL_DELETING_NOIO);
 
+	/*
+	 * Readers walk the list under ctrl->srcu, so hide the namespaces from
+	 * new readers and wait for the current ones before moving them over.
+	 * list_splice_init_rcu() can't be used as it only waits for RCU
+	 * readers.
+	 */
 	mutex_lock(&ctrl->namespaces_lock);
-	list_splice_init_rcu(&ctrl->namespaces, &ns_list, synchronize_rcu);
+	if (!list_empty(&ctrl->namespaces)) {
+		struct list_head *first = ctrl->namespaces.next;
+		struct list_head *last = ctrl->namespaces.prev;
+
+		INIT_LIST_HEAD_RCU(&ctrl->namespaces);
+		synchronize_srcu(&ctrl->srcu);
+		ns_list.next = first;
+		ns_list.prev = last;
+		first->prev = &ns_list;
+		last->next = &ns_list;
+	}
 	mutex_unlock(&ctrl->namespaces_lock);
-	synchronize_srcu(&ctrl->srcu);
 
 	list_for_each_entry_safe(ns, next, &ns_list, list)
 		nvme_ns_remove(ns);
