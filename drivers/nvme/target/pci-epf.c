@@ -2507,15 +2507,18 @@ static ssize_t nvmet_pci_epf_subsysnqn_store(struct config_item *item,
 {
 	struct config_group *group = to_config_group(item);
 	struct nvmet_pci_epf *nvme_epf = to_nvme_epf(group);
+	size_t nqn_len;
 
 	/* Do not allow setting this when the function is already started. */
 	if (nvme_epf->ctrl.tctrl)
 		return -EBUSY;
 
-	if (!len)
+	nqn_len = strcspn(page, "\n");
+	if (!nqn_len || nqn_len >= sizeof(nvme_epf->subsysnqn))
 		return -EINVAL;
 
-	strscpy(nvme_epf->subsysnqn, page, len);
+	memcpy(nvme_epf->subsysnqn, page, nqn_len);
+	nvme_epf->subsysnqn[nqn_len] = '\0';
 
 	return len;
 }
