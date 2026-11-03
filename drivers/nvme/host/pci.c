@@ -277,6 +277,15 @@ static bool noacpi;
 module_param(noacpi, bool, 0444);
 MODULE_PARM_DESC(noacpi, "disable acpi bios quirks");
 
+static bool use_comp_batch __ro_after_init = true;
+static void nvme_setup_comp_batch(void)
+{
+#ifdef CONFIG_X86
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+		use_comp_batch = false;
+#endif
+}
+
 struct nvme_dev;
 struct nvme_queue;
 
@@ -1641,8 +1650,11 @@ static inline bool nvme_poll_cq(struct nvme_queue *nvmeq,
 static irqreturn_t nvme_irq(int irq, void *data)
 {
 	struct nvme_queue *nvmeq = data;
-	DEFINE_IO_COMP_BATCH(iob);
 
+	if (!use_comp_batch)
+		return nvme_poll_cq(nvmeq, NULL) ? IRQ_HANDLED : IRQ_NONE;
+
+	DEFINE_IO_COMP_BATCH(iob);
 	if (nvme_poll_cq(nvmeq, &iob)) {
 		if (!rq_list_empty(&iob.req_list))
 			nvme_pci_complete_batch(&iob);
@@ -3782,6 +3794,8 @@ static int nvme_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto out_dev_unmap;
 
 	dev_info(dev->ctrl.device, "pci function %s\n", dev_name(&pdev->dev));
+
+	nvme_setup_comp_batch();
 
 	result = nvme_pci_enable(dev);
 	if (result)
