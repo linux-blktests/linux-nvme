@@ -281,7 +281,7 @@ static bool nvmet_pci_epf_dma_filter(struct dma_chan *chan, void *arg)
 	memset(&caps, 0, sizeof(caps));
 	dma_get_slave_caps(chan, &caps);
 
-	return chan->device->dev == filter->dev &&
+	return dmaengine_get_provider_device(chan) == filter->dev &&
 		(filter->dma_mask & caps.directions);
 }
 
