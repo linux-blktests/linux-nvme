@@ -1248,10 +1248,11 @@ static void nvmet_pci_epf_queue_response(struct nvmet_req *req)
 	iod->status = le16_to_cpu(req->cqe->status) >> 1;
 
 	/*
-	 * If the command failed or we have no data to transfer, complete the
-	 * command immediately.
+	 * If we have no data to transfer back to the host, complete the
+	 * command immediately.  Otherwise wake up the work item, which
+	 * transfers the data and completes the command even if it failed.
 	 */
-	if (iod->status || !iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
+	if (!iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
 		nvmet_pci_epf_complete_iod(iod);
 		return;
 	}
@@ -1659,7 +1660,7 @@ static void nvmet_pci_epf_exec_iod_work(struct work_struct *work)
 	wait_for_completion(&iod->done);
 
 	if (iod->status != NVME_SC_SUCCESS)
-		return;
+		goto complete;
 
 	WARN_ON_ONCE(!iod->data_len || iod->dma_dir != DMA_TO_DEVICE);
 	nvmet_pci_epf_transfer_iod_data(iod);
