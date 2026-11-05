@@ -634,6 +634,14 @@ static ssize_t nvme_ctrl_reconnect_delay_store(struct device *dev,
 	if (err)
 		return err;
 
+	/*
+	 * reconnect_delay is used as a divisor by nvme_ctrl_loss_tmo_store()
+	 * and the reconnect logic expects a positive value, just like the
+	 * nvme-fabrics option parser does.
+	 */
+	if (!v || v > INT_MAX)
+		return -EINVAL;
+
 	ctrl->opts->reconnect_delay = v;
 	return count;
 }
