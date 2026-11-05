@@ -1493,6 +1493,15 @@ out_uninit:
 
 void nvme_mpath_uninit(struct nvme_ctrl *ctrl)
 {
+	/*
+	 * ANA work can be queued by AER completion (via
+	 * nvme_handle_aen_notice), namespace scanning
+	 * (nvme_scan_work), and the failover path
+	 * (nvme_failover_req).  Drain any remaining work before
+	 * releasing the ANA resources.
+	 */
+	cancel_work_sync(&ctrl->ana_work);
+
 	kvfree(ctrl->ana_log_buf);
 	ctrl->ana_log_buf = NULL;
 	ctrl->ana_log_size = 0;
