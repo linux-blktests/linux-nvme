@@ -158,6 +158,12 @@ struct rdma_cm_id *rdma_create_user_id(rdma_cm_event_handler event_handler,
 	__rdma_create_kernel_id(net, event_handler, context, ps, qp_type,      \
 				KBUILD_MODNAME)
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+void rdma_reclassify_id_for_listen(struct rdma_cm_id *id);
+#else
+static inline void rdma_reclassify_id_for_listen(struct rdma_cm_id *id) {}
+#endif
+
 /**
   * rdma_destroy_id - Destroys an RDMA identifier.
   *
