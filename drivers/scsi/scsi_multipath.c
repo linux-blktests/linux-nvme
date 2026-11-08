@@ -262,6 +262,20 @@ static void scsi_mpath_clone_end_io(struct bio *clone)
 {
 	struct bio *master_bio = clone->bi_private;
 
+	if (clone->bi_status && blk_path_error(clone->bi_status)) {
+		struct mpath_head *mpath_head =
+				master_bio->bi_bdev->bd_disk->private_data;
+		unsigned long flags;
+
+		spin_lock_irqsave(&mpath_head->requeue_lock, flags);
+		bio_list_add(&mpath_head->requeue_list, master_bio);
+		spin_unlock_irqrestore(&mpath_head->requeue_lock, flags);
+		bio_put(clone);
+
+		mpath_schedule_requeue_work(mpath_head);
+		return;
+	}
+
 	master_bio->bi_status = clone->bi_status;
 	bio_put(clone);
 	bio_endio(master_bio);
