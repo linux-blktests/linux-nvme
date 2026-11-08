@@ -1989,8 +1989,8 @@ out_put_budget:
 		 * we hit an error, as we will never see this command
 		 * again.
 		 */
-		if (req->rq_flags & RQF_DONTPREP)
-			scsi_mq_uninit_cmd(cmd);
+		scsi_cleanup_rq(req);
+
 		scsi_run_queue_async(sdev);
 		break;
 	}
