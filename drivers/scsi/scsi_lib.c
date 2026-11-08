@@ -1991,6 +1991,9 @@ out_put_budget:
 			cmd->result = DID_NO_CONNECT << 16;
 		else
 			cmd->result = DID_ERROR << 16;
+
+		if (sdev->scsi_mpath_dev && is_mpath_request(req))
+			scsi_mpath_end_request_no_update(req, ret);
 		/*
 		 * Make sure to release all allocated resources when
 		 * we hit an error, as we will never see this command

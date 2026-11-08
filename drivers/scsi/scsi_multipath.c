@@ -614,6 +614,41 @@ bool scsi_mpath_end_request(struct request *req, blk_status_t error,
 	return false;
 }
 
+void scsi_mpath_end_request_no_update(struct request *req, blk_status_t error)
+{
+	struct scsi_cmnd *scmd = blk_mq_rq_to_pdu(req);
+	struct scsi_device *sdev = scmd->device;
+	struct bio *clone = req->bio, *master = clone->bi_private;
+	struct block_device *bi_bdev = master->bi_bdev;
+	unsigned int nr_bytes;
+
+	/* Don't generate error logs if we are going to try another path */
+	if (blk_path_error(error))
+		req->rq_flags |= RQF_QUIET;
+
+	if (scmd->flags & SCMD_MPATH_CNT_ACTIVE) {
+		struct Scsi_Host *shost = sdev->host;
+
+		atomic_dec_if_positive(&shost->mpath_nr_active);
+	}
+
+	if (!(scmd->flags & SCMD_MPATH_IO_STATS))
+		return;
+
+	/*
+	 * blk_rq_bytes() value should never exceed start_bytes, but check in
+	 * case.
+	 */
+	if (scmd->start_bytes > blk_rq_bytes(req))
+		nr_bytes = scmd->start_bytes - blk_rq_bytes(req);
+	else
+		nr_bytes = 0;
+
+	bdev_end_io_acct(bi_bdev, req_op(req),
+			 nr_bytes >> SECTOR_SHIFT,
+			 scmd->start_time);
+}
+
 int __init scsi_multipath_init(void)
 {
 	return class_register(&scsi_mpath_device_class);
