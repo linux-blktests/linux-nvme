@@ -765,7 +765,7 @@ static void nvme_queue_auth_work(struct work_struct *work)
 		return;
 	}
 
-	chap->transaction = ctrl->transaction++;
+	chap->transaction = (u16)atomic_inc_return(&ctrl->transaction);
 
 	/* DH-HMAC-CHAP Step 1: send negotiate */
 	dev_dbg(ctrl->device, "%s: qid %d send negotiate\n",
