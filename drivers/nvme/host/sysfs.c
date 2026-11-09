@@ -634,6 +634,9 @@ static ssize_t nvme_ctrl_reconnect_delay_store(struct device *dev,
 	if (err)
 		return err;
 
+	if (!v)
+		return -EINVAL;
+
 	ctrl->opts->reconnect_delay = v;
 	return count;
 }
