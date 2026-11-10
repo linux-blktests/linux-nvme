@@ -1444,6 +1444,8 @@ out:
 	return ret;
 }
 
+static int nvme_tcp_recv_tls_record(struct nvme_tcp_queue *queue);
+
 static int nvme_tcp_try_recv(struct nvme_tcp_queue *queue)
 {
 	struct socket *sock = queue->sock;
@@ -1456,6 +1458,18 @@ static int nvme_tcp_try_recv(struct nvme_tcp_queue *queue)
 	lock_sock(sk);
 	queue->nr_cqe = 0;
 	consumed = sock->ops->read_sock(sk, &rd_desc, nvme_tcp_recv_skb);
+	/*
+	 * kTLS cannot pass a TLS record without application data to
+	 * nvme_tcp_recv_skb(). It returns -EINVAL and leaves the record at
+	 * the head of the receive queue. recvmsg() takes the socket lock,
+	 * so read the record without it.
+	 */
+	if (unlikely(consumed == -EINVAL && nvme_tcp_queue_tls(queue) &&
+		     queue->rd_enabled)) {
+		release_sock(sk);
+		consumed = nvme_tcp_recv_tls_record(queue);
+		lock_sock(sk);
+	}
 	/*
 	 * nvme_tcp_recv_skb() handles its own errors, so a queue that is
 	 * still enabled failed inside read_sock(). Handle it before
@@ -1623,6 +1637,115 @@ static int nvme_tcp_recv_tls_alert(struct nvme_tcp_queue *queue,
 }
 
 /*
+ * Read the rest of a TLS record whose first part was read into @msg.
+ *
+ * Returns the bytes read, or a negative errno.
+ */
+static int nvme_tcp_drain_tls_record(struct nvme_tcp_queue *queue,
+				     struct msghdr *msg, int flags)
+{
+	u8 buf[NVME_TCP_TLS_REC_CHUNK];
+	int ret, drained = 0;
+
+	while (!(msg->msg_flags & MSG_EOR)) {
+		struct kvec iov = {
+			.iov_base = buf,
+			.iov_len = sizeof(buf),
+		};
+		char cbuf[CMSG_LEN(sizeof(char))] = {};
+		/* kTLS fails a control record read without a cmsg buffer */
+		struct msghdr drain = {
+			.msg_control = cbuf,
+			.msg_controllen = sizeof(cbuf),
+		};
+
+		ret = kernel_recvmsg(queue->sock, &drain, &iov, 1, sizeof(buf),
+				     flags);
+		if (ret <= 0) {
+			pr_warn("queue %d: failed to drain TLS record: %d\n",
+				nvme_tcp_queue_id(queue), ret);
+			return ret ? : -ECONNRESET;
+		}
+		drained += ret;
+		msg->msg_flags = drain.msg_flags;
+	}
+
+	return drained;
+}
+
+/*
+ * Read the TLS record that read_sock() could not pass to
+ * nvme_tcp_recv_skb(). The caller must not hold the socket lock.
+ *
+ * A KeyUpdate needs new keys that nothing here can supply. Other handshake
+ * messages, such as a NewSessionTicket, are discarded.
+ *
+ * Returns the bytes consumed, or a negative errno if the connection cannot
+ * continue.
+ */
+static int nvme_tcp_recv_tls_record(struct nvme_tcp_queue *queue)
+{
+	u8 buf[NVME_TCP_TLS_REC_CHUNK];
+	char cbuf[CMSG_LEN(sizeof(char))] = {};
+	struct kvec iov = {
+		.iov_base = buf,
+		.iov_len = sizeof(buf),
+	};
+	struct msghdr msg = {
+		.msg_control = cbuf,
+		.msg_controllen = sizeof(cbuf),
+	};
+	int len, ret;
+	u8 ctype;
+
+	len = kernel_recvmsg(queue->sock, &msg, &iov, 1, sizeof(buf),
+			     MSG_DONTWAIT);
+	if (len <= 0) {
+		dev_err(queue->ctrl->ctrl.device,
+			"queue %d: failed to read TLS record: %d\n",
+			nvme_tcp_queue_id(queue), len);
+		goto fail;
+	}
+
+	ctype = tls_get_record_type(queue->sock->sk, (struct cmsghdr *)cbuf);
+	switch (ctype) {
+	case TLS_RECORD_TYPE_HANDSHAKE:
+		if (buf[0] == TLS_HANDSHAKE_KEYUPDATE) {
+			dev_err(queue->ctrl->ctrl.device,
+				"queue %d: peer sent a TLS KeyUpdate, which is not supported\n",
+				nvme_tcp_queue_id(queue));
+			return -EKEYEXPIRED;
+		}
+		break;
+	case TLS_RECORD_TYPE_ALERT:
+		ret = nvme_tcp_recv_tls_alert(queue, &msg, len);
+		if (ret)
+			return ret;
+		break;
+	default:
+		dev_err(queue->ctrl->ctrl.device,
+			"queue %d: unexpected TLS record %u\n",
+			nvme_tcp_queue_id(queue), ctype);
+		return -EPROTO;
+	}
+
+	ret = nvme_tcp_drain_tls_record(queue, &msg, MSG_DONTWAIT);
+	if (ret < 0) {
+		len = ret;
+		goto fail;
+	}
+
+	return len + ret;
+
+fail:
+	/* read_sock() left a whole record, so none of it can be missing */
+	if (len == -EAGAIN)
+		return -EPROTO;
+
+	return len ? : -ECONNRESET;
+}
+
+/*
  * Discard a TLS record that arrived in place of the ICResp. A peer may send
  * a NewSessionTicket as soon as the handshake completes.
  *
@@ -1632,7 +1755,6 @@ static int nvme_tcp_recv_tls_alert(struct nvme_tcp_queue *queue,
 static int nvme_tcp_skip_tls_record(struct nvme_tcp_queue *queue,
 				    struct msghdr *msg, u8 ctype, int len)
 {
-	u8 buf[NVME_TCP_TLS_REC_CHUNK];
 	int ret;
 
 	switch (ctype) {
@@ -1648,29 +1770,9 @@ static int nvme_tcp_skip_tls_record(struct nvme_tcp_queue *queue,
 	}
 
 	/* the ICResp is in a later record, drain this one first */
-	while (!(msg->msg_flags & MSG_EOR)) {
-		struct kvec iov = {
-			.iov_base = buf,
-			.iov_len = sizeof(buf),
-		};
-		char cbuf[CMSG_LEN(sizeof(char))] = {};
-		/* kTLS fails a control record read without a cmsg buffer */
-		struct msghdr drain = {
-			.msg_control = cbuf,
-			.msg_controllen = sizeof(cbuf),
-		};
+	ret = nvme_tcp_drain_tls_record(queue, msg, 0);
 
-		ret = kernel_recvmsg(queue->sock, &drain, &iov, 1, sizeof(buf),
-				     0);
-		if (ret <= 0) {
-			pr_warn("queue %d: failed to drain TLS record: %d\n",
-				nvme_tcp_queue_id(queue), ret);
-			return ret ? : -ECONNRESET;
-		}
-		msg->msg_flags = drain.msg_flags;
-	}
-
-	return 0;
+	return ret < 0 ? ret : 0;
 }
 
 /*
