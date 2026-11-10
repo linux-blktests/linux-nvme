@@ -1267,6 +1267,12 @@ static inline struct nvme_ns *nvme_get_ns_from_dev(struct device *dev)
 #ifdef CONFIG_NVME_HWMON
 int nvme_hwmon_init(struct nvme_ctrl *ctrl);
 void nvme_hwmon_exit(struct nvme_ctrl *ctrl);
+void nvme_hwmon_smart_event(struct nvme_ctrl *ctrl);
+
+static inline bool nvme_hwmon_present(struct nvme_ctrl *ctrl)
+{
+	return ctrl->hwmon_device != NULL;
+}
 #else
 static inline int nvme_hwmon_init(struct nvme_ctrl *ctrl)
 {
@@ -1275,6 +1281,15 @@ static inline int nvme_hwmon_init(struct nvme_ctrl *ctrl)
 
 static inline void nvme_hwmon_exit(struct nvme_ctrl *ctrl)
 {
+}
+
+static inline void nvme_hwmon_smart_event(struct nvme_ctrl *ctrl)
+{
+}
+
+static inline bool nvme_hwmon_present(struct nvme_ctrl *ctrl)
+{
+	return false;
 }
 #endif
 

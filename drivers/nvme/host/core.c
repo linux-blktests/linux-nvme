@@ -1792,6 +1792,17 @@ static void nvme_enable_aen(struct nvme_ctrl *ctrl)
 	u32 result, supported_aens = ctrl->oaes & NVME_AEN_SUPPORTED;
 	int status;
 
+	/*
+	 * Unlike the notice events above, SMART / Health Status events have
+	 * no OAES capability bit: AEC dw11 bits 7:0 are the SMART / Health
+	 * Critical Warnings (SHCW) mask, which mirrors the critical_warning
+	 * byte of the SMART log.  Subscribe to the temperature warning
+	 * whenever the hwmon support is present, as that is the only
+	 * consumer.
+	 */
+	if (nvme_hwmon_present(ctrl))
+		supported_aens |= NVME_SMART_CRIT_TEMPERATURE;
+
 	if (!supported_aens)
 		return;
 
@@ -5006,8 +5017,12 @@ void nvme_complete_async_event(struct nvme_ctrl *ctrl, __le16 status,
 			nvme_handle_aer_persistent_error(ctrl);
 			return;
 		}
-		fallthrough;
+		ctrl->aen_result = result;
+		break;
 	case NVME_AER_SMART:
+		nvme_hwmon_smart_event(ctrl);
+		ctrl->aen_result = result;
+		break;
 	case NVME_AER_CSS:
 	case NVME_AER_VS:
 		ctrl->aen_result = result;
