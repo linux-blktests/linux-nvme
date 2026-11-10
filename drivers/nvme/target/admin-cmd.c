@@ -238,15 +238,17 @@ static u16 nvmet_get_smart_log_nsid(struct nvmet_req *req,
 		return status;
 
 	/* we don't have the right data for file backed ns */
-	if (!req->ns->bdev)
+	if (!nvmet_ns_bdev(req->ns))
 		return NVME_SC_SUCCESS;
 
-	host_reads = part_stat_read(req->ns->bdev, ios[READ]);
+	host_reads = part_stat_read(nvmet_ns_bdev(req->ns), ios[READ]);
 	data_units_read =
-		DIV_ROUND_UP(part_stat_read(req->ns->bdev, sectors[READ]), 1000);
-	host_writes = part_stat_read(req->ns->bdev, ios[WRITE]);
+		DIV_ROUND_UP(part_stat_read(nvmet_ns_bdev(req->ns),
+				sectors[READ]), 1000);
+	host_writes = part_stat_read(nvmet_ns_bdev(req->ns), ios[WRITE]);
 	data_units_written =
-		DIV_ROUND_UP(part_stat_read(req->ns->bdev, sectors[WRITE]), 1000);
+		DIV_ROUND_UP(part_stat_read(nvmet_ns_bdev(req->ns),
+				sectors[WRITE]), 1000);
 
 	put_unaligned_le64(host_reads, &slog->host_reads[0]);
 	put_unaligned_le64(data_units_read, &slog->data_units_read[0]);
@@ -266,7 +268,15 @@ static u16 nvmet_get_smart_log_all(struct nvmet_req *req,
 	unsigned long idx;
 
 	ctrl = req->sq->ctrl;
+	mutex_lock(&ctrl->subsys->lock);
 	nvmet_for_each_enabled_ns(&ctrl->subsys->namespaces, idx, ns) {
+		/*
+		 * Both ctrl->subsys->lock and ns->subsys->lock refer to the
+		 * same lock. However there's no way for us to annotate such
+		 * locking semantics using clang context annotation. So
+		 * explicitly assert the capability.
+		 */
+		__assume_ctx_lock(&ns->subsys->lock);
 		/* we don't have the right data for file backed ns */
 		if (!ns->bdev)
 			continue;
@@ -277,6 +287,7 @@ static u16 nvmet_get_smart_log_all(struct nvmet_req *req,
 		data_units_written += DIV_ROUND_UP(
 			part_stat_read(ns->bdev, sectors[WRITE]), 1000);
 	}
+	mutex_unlock(&ctrl->subsys->lock);
 
 	put_unaligned_le64(host_reads, &slog->host_reads[0]);
 	put_unaligned_le64(data_units_read, &slog->data_units_read[0]);
@@ -298,7 +309,7 @@ static void nvmet_execute_get_log_page_rmi(struct nvmet_req *req)
 	if (status)
 		goto out;
 
-	if (!req->ns->bdev || !bdev_rot(req->ns->bdev)) {
+	if (!nvmet_ns_bdev(req->ns) || !bdev_rot(nvmet_ns_bdev(req->ns))) {
 		status = NVME_SC_INVALID_FIELD | NVME_STATUS_DNR;
 		goto out;
 	}
@@ -315,7 +326,7 @@ static void nvmet_execute_get_log_page_rmi(struct nvmet_req *req)
 	}
 
 	log->endgid = req->cmd->get_log_page.lsi;
-	disk = req->ns->bdev->bd_disk;
+	disk = nvmet_ns_bdev(req->ns)->bd_disk;
 	if (disk && disk->ia_ranges)
 		log->numa = cpu_to_le16(disk->ia_ranges->nr_ia_ranges);
 	else
@@ -476,10 +487,19 @@ static u32 nvmet_format_ana_group(struct nvmet_req *req, u32 grpid,
 	u32 count = 0;
 
 	if (!(req->cmd->get_log_page.lsp & NVME_ANA_LOG_RGO)) {
+		mutex_lock(&ctrl->subsys->lock);
 		nvmet_for_each_enabled_ns(&ctrl->subsys->namespaces, idx, ns) {
+			/*
+			 * Both ctrl->subsys->lock and ns->subsys->lock refers
+			 * to the same lock. However there's no way for us to
+			 * annotate such locking semantics using clang context
+			 * annotation. So explicitly assert the capability.
+			 */
+			__assume_ctx_lock(&ns->subsys->lock);
 			if (ns->anagrpid == grpid)
 				desc->nsids[count++] = cpu_to_le32(ns->nsid);
 		}
+		mutex_unlock(&ctrl->subsys->lock);
 	}
 
 	desc->grpid = cpu_to_le32(grpid);
@@ -512,15 +532,17 @@ static void nvmet_execute_get_log_page_endgrp(struct nvmet_req *req)
 		goto out;
 	}
 
-	if (!req->ns->bdev)
+	if (!nvmet_ns_bdev(req->ns))
 		goto copy;
 
-	host_reads = part_stat_read(req->ns->bdev, ios[READ]);
+	host_reads = part_stat_read(nvmet_ns_bdev(req->ns), ios[READ]);
 	data_units_read =
-		DIV_ROUND_UP(part_stat_read(req->ns->bdev, sectors[READ]), 1000);
-	host_writes = part_stat_read(req->ns->bdev, ios[WRITE]);
+		DIV_ROUND_UP(part_stat_read(nvmet_ns_bdev(req->ns),
+				sectors[READ]), 1000);
+	host_writes = part_stat_read(nvmet_ns_bdev(req->ns), ios[WRITE]);
 	data_units_written =
-		DIV_ROUND_UP(part_stat_read(req->ns->bdev, sectors[WRITE]), 1000);
+		DIV_ROUND_UP(part_stat_read(nvmet_ns_bdev(req->ns),
+				sectors[WRITE]), 1000);
 
 	put_unaligned_le64(host_reads, &log->hrc[0]);
 	put_unaligned_le64(data_units_read, &log->dur[0]);
@@ -830,18 +852,18 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 		goto done;
 	}
 
-	if (nvmet_ns_revalidate(req->ns)) {
-		mutex_lock(&req->ns->subsys->lock);
+	mutex_lock(&req->ns->subsys->lock);
+	if (nvmet_ns_revalidate(req->ns))
 		nvmet_ns_changed(req->ns->subsys, req->ns->nsid);
-		mutex_unlock(&req->ns->subsys->lock);
-	}
+	mutex_unlock(&req->ns->subsys->lock);
 
 	/*
 	 * nuse = ncap = nsze isn't always true, but we have no way to find
 	 * that out from the underlying device.
 	 */
 	id->ncap = id->nsze =
-		cpu_to_le64(req->ns->size >> req->ns->blksize_shift);
+		cpu_to_le64(nvmet_ns_size(req->ns) >>
+				nvmet_ns_blksize_shift(req->ns));
 	switch (req->port->ana_state[req->ns->anagrpid]) {
 	case NVME_ANA_INACCESSIBLE:
 	case NVME_ANA_PERSISTENT_LOSS:
@@ -851,8 +873,8 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 		break;
 	}
 
-	if (req->ns->bdev)
-		nvmet_bdev_set_limits(req->ns->bdev, id);
+	if (nvmet_ns_bdev(req->ns))
+		nvmet_bdev_set_limits(nvmet_ns_bdev(req->ns), id);
 
 	/*
 	 * We just provide a single LBA format that matches what the
@@ -881,23 +903,23 @@ static void nvmet_execute_identify_ns(struct nvmet_req *req)
 	 * Since we don't know any better, every namespace is its own endurance
 	 * group.
 	 */
-	id->endgid = cpu_to_le16(req->ns->nsid);
+	id->endgid = cpu_to_le16(nvmet_ns_nsid(req->ns));
 
-	memcpy(&id->nguid, &req->ns->nguid, sizeof(id->nguid));
+	memcpy(&id->nguid, nvmet_ns_nguid(req->ns), sizeof(id->nguid));
 
-	id->lbaf[0].ds = req->ns->blksize_shift;
+	id->lbaf[0].ds = nvmet_ns_blksize_shift(req->ns);
 
 	if (req->sq->ctrl->pi_support && nvmet_ns_has_pi(req->ns)) {
 		id->dpc = NVME_NS_DPC_PI_FIRST | NVME_NS_DPC_PI_LAST |
 			  NVME_NS_DPC_PI_TYPE1 | NVME_NS_DPC_PI_TYPE2 |
 			  NVME_NS_DPC_PI_TYPE3;
 		id->mc = NVME_MC_EXTENDED_LBA;
-		id->dps = req->ns->pi_type;
+		id->dps = nvmet_ns_pi_type(req->ns);
 		id->flbas = NVME_NS_FLBAS_META_EXT;
-		id->lbaf[0].ms = cpu_to_le16(req->ns->metadata_size);
+		id->lbaf[0].ms = cpu_to_le16(nvmet_ns_metadata_size(req->ns));
 	}
 
-	if (req->ns->readonly)
+	if (nvmet_ns_readonly(req->ns))
 		id->nsattr |= NVME_NS_ATTR_RO;
 done:
 	if (!status)
@@ -925,7 +947,16 @@ static void nvmet_execute_identify_endgrp_list(struct nvmet_req *req)
 		goto out;
 	}
 
+	mutex_lock(&ctrl->subsys->lock);
 	nvmet_for_each_enabled_ns(&ctrl->subsys->namespaces, idx, ns) {
+		/*
+		 * Both ctrl->subsys->lock and ns->subsys->lock refers to the
+		 * same lock. However there's no way for us to annotate such
+		 * locking semantics using clang context annotation. So
+		 * explicitly assert the capability.
+		 */
+		__assume_ctx_lock(&ns->subsys->lock);
+
 		if (ns->nsid <= min_endgid)
 			continue;
 
@@ -933,6 +964,7 @@ static void nvmet_execute_identify_endgrp_list(struct nvmet_req *req)
 		if (i == buf_size / sizeof(__le16))
 			break;
 	}
+	mutex_unlock(&ctrl->subsys->lock);
 
 	list[0] = cpu_to_le16(i - 1);
 	status = nvmet_copy_to_sgl(req, 0, list, buf_size);
@@ -968,7 +1000,16 @@ static void nvmet_execute_identify_nslist(struct nvmet_req *req, bool match_css)
 		goto out;
 	}
 
+	mutex_lock(&ctrl->subsys->lock);
 	nvmet_for_each_enabled_ns(&ctrl->subsys->namespaces, idx, ns) {
+		/*
+		 * Both ctrl->subsys->lock and ns->subsys->lock refers to the
+		 * same lock. However there's no way for us to annotate such
+		 * locking semantics using clang context annotation. So
+		 * explicitly assert the capability.
+		 */
+		__assume_ctx_lock(&ns->subsys->lock);
+
 		if (ns->nsid <= min_nsid)
 			continue;
 		if (match_css && ns->csi != req->cmd->identify.csi)
@@ -977,6 +1018,7 @@ static void nvmet_execute_identify_nslist(struct nvmet_req *req, bool match_css)
 		if (i == buf_size / sizeof(__le32))
 			break;
 	}
+	mutex_unlock(&ctrl->subsys->lock);
 
 	status = nvmet_copy_to_sgl(req, 0, list, buf_size);
 
@@ -1011,29 +1053,34 @@ static void nvmet_execute_identify_desclist(struct nvmet_req *req)
 {
 	off_t off = 0;
 	u16 status;
+	uuid_t uuid;
+	u8 csi;
 
 	status = nvmet_req_find_ns(req);
 	if (status)
 		goto out;
 
-	if (memchr_inv(&req->ns->uuid, 0, sizeof(req->ns->uuid))) {
+	uuid = nvmet_ns_uuid(req->ns);
+	if (memchr_inv(&uuid, 0, sizeof(uuid))) {
 		status = nvmet_copy_ns_identifier(req, NVME_NIDT_UUID,
 						  NVME_NIDT_UUID_LEN,
-						  &req->ns->uuid, &off);
+						  &uuid, &off);
 		if (status)
 			goto out;
 	}
-	if (memchr_inv(req->ns->nguid, 0, sizeof(req->ns->nguid))) {
+	if (memchr_inv(nvmet_ns_nguid(req->ns), 0, sizeof(req->ns->nguid))) {
 		status = nvmet_copy_ns_identifier(req, NVME_NIDT_NGUID,
 						  NVME_NIDT_NGUID_LEN,
-						  &req->ns->nguid, &off);
+						  nvmet_ns_nguid(req->ns),
+						  &off);
 		if (status)
 			goto out;
 	}
 
+	csi = nvmet_ns_csi(req->ns);
 	status = nvmet_copy_ns_identifier(req, NVME_NIDT_CSI,
 					  NVME_NIDT_CSI_LEN,
-					  &req->ns->csi, &off);
+					  &csi, &off);
 	if (status)
 		goto out;
 
@@ -1066,8 +1113,8 @@ static void nvme_execute_identify_ns_nvm(struct nvmet_req *req)
 		status = NVME_SC_INTERNAL;
 		goto out;
 	}
-	if (req->ns->bdev)
-		nvmet_bdev_set_nvm_limits(req->ns->bdev, id);
+	if (nvmet_ns_bdev(req->ns))
+		nvmet_bdev_set_nvm_limits(nvmet_ns_bdev(req->ns), id);
 	status = nvmet_copy_to_sgl(req, 0, id, sizeof(*id));
 	kfree(id);
 out:
@@ -1092,16 +1139,16 @@ static void nvmet_execute_id_cs_indep(struct nvmet_req *req)
 	id->nstat = NVME_NSTAT_NRDY;
 	id->anagrpid = cpu_to_le32(req->ns->anagrpid);
 	id->nmic = NVME_NS_NMIC_SHARED;
-	if (req->ns->readonly)
+	if (nvmet_ns_readonly(req->ns))
 		id->nsattr |= NVME_NS_ATTR_RO;
-	if (req->ns->bdev && bdev_rot(req->ns->bdev))
+	if (nvmet_ns_bdev(req->ns) && bdev_rot(nvmet_ns_bdev(req->ns)))
 		id->nsfeat |= NVME_NS_ROTATIONAL;
 	/*
 	 * We need flush command to flush the file's metadata,
 	 * so report supporting vwc if backend is file, even
 	 * though buffered_io is disable.
 	 */
-	if (req->ns->bdev && !bdev_write_cache(req->ns->bdev))
+	if (nvmet_ns_bdev(req->ns) && !bdev_write_cache(nvmet_ns_bdev(req->ns)))
 		id->nsfeat |= NVME_NS_VWC_NOT_PRESENT;
 
 	status = nvmet_copy_to_sgl(req, 0, id, sizeof(*id));
@@ -1187,6 +1234,7 @@ static void nvmet_execute_abort(struct nvmet_req *req)
 }
 
 static u16 nvmet_write_protect_flush_sync(struct nvmet_req *req)
+	__must_hold(&req->ns->subsys->lock)
 {
 	u16 status;
 
@@ -1210,25 +1258,33 @@ static u16 nvmet_set_feat_write_protect(struct nvmet_req *req)
 	if (status)
 		return status;
 
-	mutex_lock(&subsys->lock);
+	mutex_lock(&req->ns->subsys->lock);
 	switch (write_protect) {
 	case NVME_NS_WRITE_PROTECT:
-		req->ns->readonly = true;
+		WRITE_ONCE(req->ns->readonly, true);
 		status = nvmet_write_protect_flush_sync(req);
 		if (status)
-			req->ns->readonly = false;
+			WRITE_ONCE(req->ns->readonly, false);
 		break;
 	case NVME_NS_NO_WRITE_PROTECT:
-		req->ns->readonly = false;
+		WRITE_ONCE(req->ns->readonly, false);
 		status = 0;
 		break;
 	default:
 		break;
 	}
 
-	if (!status)
+	if (!status) {
+		/*
+		 * Both ns->subsys->lock and subsys->lock refers to the same
+		 * lock. However there's no way for us to annotate such locking
+		 * semantics using clang context annotation. So explicitly
+		 * assert the capability.
+		 */
+		__assume_ctx_lock(&subsys->lock);
 		nvmet_ns_changed(subsys, req->ns->nsid);
-	mutex_unlock(&subsys->lock);
+	}
+	mutex_unlock(&req->ns->subsys->lock);
 	return status;
 }
 
@@ -1409,20 +1465,19 @@ void nvmet_execute_set_features(struct nvmet_req *req)
 
 static u16 nvmet_get_feat_write_protect(struct nvmet_req *req)
 {
-	struct nvmet_subsys *subsys = nvmet_req_subsys(req);
 	u32 result;
 
 	result = nvmet_req_find_ns(req);
 	if (result)
 		return result;
 
-	mutex_lock(&subsys->lock);
+	mutex_lock(&req->ns->subsys->lock);
 	if (req->ns->readonly == true)
 		result = NVME_NS_WRITE_PROTECT;
 	else
 		result = NVME_NS_NO_WRITE_PROTECT;
 	nvmet_set_result(req, result);
-	mutex_unlock(&subsys->lock);
+	mutex_unlock(&req->ns->subsys->lock);
 
 	return 0;
 }

@@ -118,13 +118,22 @@ u16 nvmet_zero_sgl(struct nvmet_req *req, off_t off, size_t len)
 }
 
 static u32 nvmet_max_nsid(struct nvmet_subsys *subsys)
+	__must_hold(&subsys->lock)
 {
 	struct nvmet_ns *cur;
 	unsigned long idx;
 	u32 nsid = 0;
 
-	nvmet_for_each_enabled_ns(&subsys->namespaces, idx, cur)
+	nvmet_for_each_enabled_ns(&subsys->namespaces, idx, cur) {
+		/*
+		 * Both ns->subsys->lock and subsys->lock refers to the same
+		 * lock. However there's no way for us to annotate such locking
+		 * semantics using clang context annotation. So explicitly
+		 * assert the capability.
+		 */
+		__assume_ctx_lock(&cur->subsys->lock);
 		nsid = cur->nsid;
+	}
 
 	return nsid;
 }
@@ -484,12 +493,14 @@ void nvmet_put_namespace(struct nvmet_ns *ns)
 }
 
 static void nvmet_ns_dev_disable(struct nvmet_ns *ns)
+	__must_hold(&ns->subsys->lock)
 {
 	nvmet_bdev_ns_disable(ns);
 	nvmet_file_ns_disable(ns);
 }
 
 static int nvmet_p2pmem_ns_enable(struct nvmet_ns *ns)
+	__must_hold(&ns->subsys->lock)
 {
 	int ret;
 	struct pci_dev *p2p_dev;
@@ -535,12 +546,19 @@ static int nvmet_p2pmem_ns_enable(struct nvmet_ns *ns)
 
 static void nvmet_p2pmem_ns_add_p2p(struct nvmet_ctrl *ctrl,
 				    struct nvmet_ns *ns)
+	__must_hold(&ctrl->subsys->lock)
 {
 	struct device *clients[2];
 	struct pci_dev *p2p_dev;
 	int ret;
 
 	lockdep_assert_held(&ctrl->subsys->lock);
+	/*
+	 * Both ctrl->subsys->lock and ns->subsys->lock refers to the same lock.
+	 * However there's no way for us to annotate such locking semantics
+	 * using clang context annotation. So explicitly assert the capability.
+	 */
+	__assume_ctx_lock(&ns->subsys->lock);
 
 	if (!ctrl->p2p_client || !ns->use_p2pmem)
 		return;
@@ -573,14 +591,14 @@ static void nvmet_p2pmem_ns_add_p2p(struct nvmet_ctrl *ctrl,
 
 bool nvmet_ns_revalidate(struct nvmet_ns *ns)
 {
-	loff_t oldsize = ns->size;
+	loff_t oldsize = READ_ONCE(ns->size);
 
 	if (ns->bdev)
 		nvmet_bdev_ns_revalidate(ns);
 	else
 		nvmet_file_ns_revalidate(ns);
 
-	return oldsize != ns->size;
+	return oldsize != READ_ONCE(ns->size);
 }
 
 int nvmet_ns_enable(struct nvmet_ns *ns)
@@ -615,8 +633,16 @@ int nvmet_ns_enable(struct nvmet_ns *ns)
 	if (ret)
 		goto out_dev_disable;
 
-	list_for_each_entry(ctrl, &subsys->ctrls, subsys_entry)
+	list_for_each_entry(ctrl, &subsys->ctrls, subsys_entry) {
+		/*
+		 * Both subsys->lock and ctrl->subsys->lock refers to the same
+		 * lock. However there's no way for us to annotate such locking
+		 * semantics using clang context annotation. So explicitly
+		 * assert the capability.
+		 */
+		__assume_ctx_lock(&ctrl->subsys->lock);
 		nvmet_p2pmem_ns_add_p2p(ctrl, ns);
+	}
 
 	if (ns->pr.enable) {
 		ret = nvmet_pr_init_ns(ns);
@@ -704,13 +730,13 @@ void nvmet_ns_free(struct nvmet_ns *ns)
 		subsys->max_nsid = nvmet_max_nsid(subsys);
 
 	subsys->nr_namespaces--;
+	kfree(ns->device_path);
 	mutex_unlock(&subsys->lock);
 
 	down_write(&nvmet_ana_sem);
 	nvmet_ana_group_enabled[ns->anagrpid]--;
 	up_write(&nvmet_ana_sem);
 
-	kfree(ns->device_path);
 	kfree(ns);
 }
 
@@ -729,6 +755,12 @@ struct nvmet_ns *nvmet_ns_alloc(struct nvmet_subsys *subsys, u32 nsid)
 
 	init_completion(&ns->disable_done);
 
+	/*
+	 * Both subsys->lock and ns->subsys->lock refers to the same lock.
+	 * However there's no way for us to annotate such locking semantics
+	 * using clang context annotation. So explicitly assert the capability.
+	 */
+	__assume_ctx_lock(&ns->subsys->lock);
 	ns->nsid = nsid;
 	ns->subsys = subsys;
 
@@ -739,17 +771,16 @@ struct nvmet_ns *nvmet_ns_alloc(struct nvmet_subsys *subsys, u32 nsid)
 		goto out_exit;
 
 	subsys->nr_namespaces++;
+	uuid_gen(&ns->uuid);
+	ns->csi = NVME_CSI_NVM;
 
+	__release_ctx_lock(&ns->subsys->lock);
 	mutex_unlock(&subsys->lock);
 
 	down_write(&nvmet_ana_sem);
 	ns->anagrpid = NVMET_DEFAULT_ANA_GRPID;
 	nvmet_ana_group_enabled[ns->anagrpid]++;
 	up_write(&nvmet_ana_sem);
-
-	uuid_gen(&ns->uuid);
-	ns->buffered_io = false;
-	ns->csi = NVME_CSI_NVM;
 
 	return ns;
 out_exit:
@@ -1073,7 +1104,7 @@ static inline u16 nvmet_check_ana_state(struct nvmet_port *port,
 
 static inline u16 nvmet_io_cmd_check_access(struct nvmet_req *req)
 {
-	if (unlikely(req->ns->readonly)) {
+	if (unlikely(nvmet_ns_readonly(req->ns))) {
 		switch (req->cmd->common.opcode) {
 		case nvme_cmd_read:
 		case nvme_cmd_flush:
@@ -1152,9 +1183,9 @@ static u16 nvmet_parse_io_cmd(struct nvmet_req *req)
 			return ret;
 	}
 
-	switch (req->ns->csi) {
+	switch (nvmet_ns_csi(req->ns)) {
 	case NVME_CSI_NVM:
-		if (req->ns->file)
+		if (nvmet_ns_file(req->ns))
 			ret = nvmet_file_parse_io_cmd(req);
 		else
 			ret = nvmet_bdev_parse_io_cmd(req);
@@ -1344,7 +1375,8 @@ static struct pci_dev *nvmet_req_find_p2p_dev(struct nvmet_req *req)
 	if (!IS_ENABLED(CONFIG_PCI_P2PDMA) ||
 	    !req->sq->ctrl || !req->sq->qid || !req->ns)
 		return NULL;
-	return radix_tree_lookup(&req->sq->ctrl->p2p_ns_map, req->ns->nsid);
+	return radix_tree_lookup(&req->sq->ctrl->p2p_ns_map,
+			nvmet_ns_nsid(req->ns));
 }
 
 int nvmet_req_alloc_sgls(struct nvmet_req *req)
@@ -1576,6 +1608,7 @@ bool nvmet_host_allowed(struct nvmet_subsys *subsys, const char *hostnqn)
 
 static void nvmet_setup_p2p_ns_map(struct nvmet_ctrl *ctrl,
 		struct device *p2p_client)
+	__must_hold(&ctrl->subsys->lock)
 {
 	struct nvmet_ns *ns;
 	unsigned long idx;
@@ -1733,6 +1766,13 @@ struct nvmet_ctrl *nvmet_alloc_ctrl(struct nvmet_alloc_ctrl_args *args)
 	if (ret)
 		goto init_pr_fail;
 	list_add_tail(&ctrl->subsys_entry, &subsys->ctrls);
+
+	/*
+	 * Both subsys->lock and ctrl->subsys->lock refers to the same lock.
+	 * However there's no way for us to annotate such locking semantics
+	 * using clang context annotation. So explicitly assert the capability.
+	 */
+	__assume_ctx_lock(&ctrl->subsys->lock);
 	nvmet_setup_p2p_ns_map(ctrl, args->p2p_client);
 	nvmet_debugfs_ctrl_setup(ctrl);
 	mutex_unlock(&subsys->lock);

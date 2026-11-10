@@ -15,7 +15,7 @@
 
 void nvmet_file_ns_revalidate(struct nvmet_ns *ns)
 {
-	ns->size = i_size_read(ns->file->f_mapping->host);
+	WRITE_ONCE(ns->size, i_size_read(ns->file->f_mapping->host));
 }
 
 void nvmet_file_ns_disable(struct nvmet_ns *ns)
@@ -68,7 +68,7 @@ int nvmet_file_ns_enable(struct nvmet_ns *ns)
 err:
 	fput(ns->file);
 	ns->file = NULL;
-	ns->size = 0;
+	WRITE_ONCE(ns->size, 0);
 	ns->blksize_shift = 0;
 	return ret;
 }
@@ -84,17 +84,17 @@ static ssize_t nvmet_file_submit_bvec(struct nvmet_req *req, loff_t pos,
 	if (req->cmd->rw.opcode == nvme_cmd_write) {
 		if (req->cmd->rw.control & cpu_to_le16(NVME_RW_FUA))
 			ki_flags |= IOCB_DSYNC;
-		call_iter = req->ns->file->f_op->write_iter;
+		call_iter = nvmet_ns_file(req->ns)->f_op->write_iter;
 		rw = ITER_SOURCE;
 	} else {
-		call_iter = req->ns->file->f_op->read_iter;
+		call_iter = nvmet_ns_file(req->ns)->f_op->read_iter;
 		rw = ITER_DEST;
 	}
 
 	iov_iter_bvec(&iter, rw, req->f.bvec, nr_segs, count);
 
 	iocb->ki_pos = pos;
-	iocb->ki_filp = req->ns->file;
+	iocb->ki_filp = nvmet_ns_file(req->ns);
 	iocb->ki_flags = ki_flags | iocb->ki_filp->f_iocb_flags;
 
 	return call_iter(iocb, &iter);
@@ -131,8 +131,8 @@ static bool nvmet_file_execute_io(struct nvmet_req *req, int ki_flags)
 	if (req->f.mpool_alloc && nr_bvec > NVMET_MAX_MPOOL_BVEC)
 		is_sync = true;
 
-	pos = le64_to_cpu(req->cmd->rw.slba) << req->ns->blksize_shift;
-	if (unlikely(pos + req->transfer_len > req->ns->size)) {
+	pos = le64_to_cpu(req->cmd->rw.slba) << nvmet_ns_blksize_shift(req->ns);
+	if (unlikely(pos + req->transfer_len > nvmet_ns_size(req->ns))) {
 		ret = -ENOSPC;
 		goto complete;
 	}
@@ -239,9 +239,9 @@ static void nvmet_file_execute_rw(struct nvmet_req *req)
 	} else
 		req->f.mpool_alloc = false;
 
-	if (req->ns->buffered_io) {
+	if (nvmet_ns_buffered_io(req->ns)) {
 		if (likely(!req->f.mpool_alloc) &&
-		    (req->ns->file->f_mode & FMODE_NOWAIT) &&
+		    (nvmet_ns_file(req->ns)->f_mode & FMODE_NOWAIT) &&
 		    nvmet_file_execute_io(req, IOCB_NOWAIT))
 			return;
 		nvmet_file_submit_buffered_io(req);
@@ -258,6 +258,19 @@ static void nvmet_file_flush_work(struct work_struct *w)
 {
 	struct nvmet_req *req = container_of(w, struct nvmet_req, f.work);
 
+	/*
+	 * The flush work is scheduled from the I/O hotpath after acquiring
+	 * a reference to the namespace. This ensures that the namespace
+	 * cannot be modified while the I/O is in flight.
+	 *
+	 * nvmet_file_flush() requires callers to hold ns->subsys->lock.
+	 * Since we already hold a namespace reference, explicitly assert
+	 * the lock capability here to satisfy the context analyzer.
+	 *
+	 * Other callers of nvmet_file_flush() that do not hold a namespace
+	 * reference must acquire ns->subsys->lock before invoking it.
+	 */
+	__assume_ctx_lock(&req->ns->subsys->lock);
 	nvmet_req_complete(req, nvmet_file_flush(req));
 }
 
@@ -284,16 +297,17 @@ static void nvmet_file_execute_discard(struct nvmet_req *req)
 		if (status)
 			break;
 
-		offset = le64_to_cpu(range.slba) << req->ns->blksize_shift;
+		offset = le64_to_cpu(range.slba) <<
+				nvmet_ns_blksize_shift(req->ns);
 		len = le32_to_cpu(range.nlb);
-		len <<= req->ns->blksize_shift;
-		if (offset + len > req->ns->size) {
+		len <<= nvmet_ns_blksize_shift(req->ns);
+		if (offset + len > nvmet_ns_size(req->ns)) {
 			req->error_slba = le64_to_cpu(range.slba);
 			status = errno_to_nvme_status(req, -ENOSPC);
 			break;
 		}
 
-		ret = vfs_fallocate(req->ns->file, mode, offset, len);
+		ret = vfs_fallocate(nvmet_ns_file(req->ns), mode, offset, len);
 		if (ret && ret != -EOPNOTSUPP) {
 			req->error_slba = le64_to_cpu(range.slba);
 			status = errno_to_nvme_status(req, ret);
@@ -338,16 +352,17 @@ static void nvmet_file_write_zeroes_work(struct work_struct *w)
 	loff_t len;
 	int ret;
 
-	offset = le64_to_cpu(write_zeroes->slba) << req->ns->blksize_shift;
+	offset = le64_to_cpu(write_zeroes->slba) <<
+			nvmet_ns_blksize_shift(req->ns);
 	len = (((sector_t)le16_to_cpu(write_zeroes->length) + 1) <<
-			req->ns->blksize_shift);
+			nvmet_ns_blksize_shift(req->ns));
 
-	if (unlikely(offset + len > req->ns->size)) {
+	if (unlikely(offset + len > nvmet_ns_size(req->ns))) {
 		nvmet_req_complete(req, errno_to_nvme_status(req, -ENOSPC));
 		return;
 	}
 
-	ret = vfs_fallocate(req->ns->file, mode, offset, len);
+	ret = vfs_fallocate(nvmet_ns_file(req->ns), mode, offset, len);
 	nvmet_req_complete(req, ret < 0 ? errno_to_nvme_status(req, ret) : 0);
 }
 

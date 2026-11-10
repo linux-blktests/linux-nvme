@@ -532,7 +532,14 @@ CONFIGFS_ATTR(nvmet_, addr_tsas);
  */
 static ssize_t nvmet_ns_device_path_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%s\n", to_nvmet_ns(item)->device_path);
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t ret;
+
+	mutex_lock(&ns->subsys->lock);
+	ret = sprintf(page, "%s\n", ns->device_path);
+	mutex_unlock(&ns->subsys->lock);
+
+	return ret;
 }
 
 static ssize_t nvmet_ns_device_path_store(struct config_item *item,
@@ -576,8 +583,13 @@ CONFIGFS_ATTR(nvmet_ns_, device_path);
 static ssize_t nvmet_ns_p2pmem_show(struct config_item *item, char *page)
 {
 	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t ret;
 
-	return pci_p2pdma_enable_show(page, ns->p2p_dev, ns->use_p2pmem);
+	mutex_lock(&ns->subsys->lock);
+	ret = pci_p2pdma_enable_show(page, ns->p2p_dev, ns->use_p2pmem);
+	mutex_unlock(&ns->subsys->lock);
+
+	return ret;
 }
 
 static ssize_t nvmet_ns_p2pmem_store(struct config_item *item,
@@ -616,7 +628,14 @@ CONFIGFS_ATTR(nvmet_ns_, p2pmem);
 
 static ssize_t nvmet_ns_device_uuid_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%pUb\n", &to_nvmet_ns(item)->uuid);
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t size;
+
+	mutex_lock(&ns->subsys->lock);
+	size = sprintf(page, "%pUb\n", &ns->uuid);
+	mutex_unlock(&ns->subsys->lock);
+
+	return size;
 }
 
 static ssize_t nvmet_ns_device_uuid_store(struct config_item *item,
@@ -644,7 +663,14 @@ CONFIGFS_ATTR(nvmet_ns_, device_uuid);
 
 static ssize_t nvmet_ns_device_nguid_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%pUb\n", &to_nvmet_ns(item)->nguid);
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t ret;
+
+	mutex_lock(&ns->subsys->lock);
+	ret = sprintf(page, "%pUb\n", &ns->nguid);
+	mutex_unlock(&ns->subsys->lock);
+
+	return ret;
 }
 
 static ssize_t nvmet_ns_device_nguid_store(struct config_item *item,
@@ -724,7 +750,14 @@ CONFIGFS_ATTR(nvmet_ns_, ana_grpid);
 
 static ssize_t nvmet_ns_enable_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%d\n", to_nvmet_ns(item)->enabled);
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t ret;
+
+	mutex_lock(&ns->subsys->lock);
+	ret = sprintf(page, "%d\n", ns->enabled);
+	mutex_unlock(&ns->subsys->lock);
+
+	return ret;
 }
 
 static ssize_t nvmet_ns_enable_store(struct config_item *item,
@@ -757,7 +790,14 @@ CONFIGFS_ATTR(nvmet_ns_, enable);
 
 static ssize_t nvmet_ns_buffered_io_show(struct config_item *item, char *page)
 {
-	return sprintf(page, "%d\n", to_nvmet_ns(item)->buffered_io);
+	struct nvmet_ns *ns = to_nvmet_ns(item);
+	ssize_t ret;
+
+	mutex_lock(&ns->subsys->lock);
+	ret = sprintf(page, "%d\n", ns->buffered_io);
+	mutex_unlock(&ns->subsys->lock);
+
+	return ret;
 }
 
 static ssize_t nvmet_ns_buffered_io_store(struct config_item *item,
