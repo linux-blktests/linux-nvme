@@ -1928,6 +1928,8 @@ static int nvmet_rdma_enable_port(struct nvmet_rdma_port *port)
 		return PTR_ERR(cm_id);
 	}
 
+	rdma_reclassify_id_for_listen(cm_id);
+
 	/*
 	 * Allow both IPv4 and IPv6 sockets to bind a single port
 	 * at the same time.

@@ -1064,6 +1064,19 @@ __rdma_create_kernel_id(struct net *net, rdma_cm_event_handler event_handler,
 }
 EXPORT_SYMBOL(__rdma_create_kernel_id);
 
+#ifdef CONFIG_DEBUG_LOCK_ALLOC
+static struct lock_class_key cma_listen_handler_mutex_key;
+void rdma_reclassify_id_for_listen(struct rdma_cm_id *id)
+{
+	struct rdma_id_private *id_priv;
+
+	id_priv = container_of(id, struct rdma_id_private, id);
+	lockdep_set_class(&id_priv->handler_mutex,
+			  &cma_listen_handler_mutex_key);
+}
+EXPORT_SYMBOL(rdma_reclassify_id_for_listen);
+#endif
+
 struct rdma_cm_id *rdma_create_user_id(rdma_cm_event_handler event_handler,
 				       void *context,
 				       enum rdma_ucm_port_space ps,
