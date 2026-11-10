@@ -707,6 +707,27 @@ void disable_irq_nosync(unsigned int irq)
 EXPORT_SYMBOL(disable_irq_nosync);
 
 /**
+ * disable_irq_noflush - mask an irq without flushing the mask to the hardware
+ * @irq: Interrupt to disable
+ *
+ * Like disable_irq_nosync(), but masks the interrupt at the chip right away
+ * instead of lazily, and does not flush the mask write to the hardware. An
+ * interrupt that still arrives is held pending and replayed by enable_irq().
+ * Use this when an extra interrupt is cheaper than flushing the mask, e.g.
+ * switching from interrupts to polling.
+ *
+ * This function may be called from IRQ context.
+ */
+void disable_irq_noflush(unsigned int irq)
+{
+	scoped_irqdesc_get_and_buslock(irq, IRQ_GET_DESC_CHECK_GLOBAL) {
+		if (!scoped_irqdesc->depth++)
+			irq_disable_noflush(scoped_irqdesc);
+	}
+}
+EXPORT_SYMBOL_GPL(disable_irq_noflush);
+
+/**
  * disable_irq - disable an irq and wait for completion
  * @irq: Interrupt to disable
  *
