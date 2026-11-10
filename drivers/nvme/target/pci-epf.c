@@ -1248,10 +1248,11 @@ static void nvmet_pci_epf_queue_response(struct nvmet_req *req)
 	iod->status = le16_to_cpu(req->cqe->status) >> 1;
 
 	/*
-	 * If the command failed or we have no data to transfer, complete the
-	 * command immediately.
+	 * If we have no data to transfer back to the host, complete the
+	 * command immediately.  Otherwise wake up the work item, which
+	 * transfers the data and completes the command even if it failed.
 	 */
-	if (iod->status || !iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
+	if (!iod->data_len || iod->dma_dir != DMA_TO_DEVICE) {
 		nvmet_pci_epf_complete_iod(iod);
 		return;
 	}
@@ -1659,7 +1660,7 @@ static void nvmet_pci_epf_exec_iod_work(struct work_struct *work)
 	wait_for_completion(&iod->done);
 
 	if (iod->status != NVME_SC_SUCCESS)
-		return;
+		goto complete;
 
 	WARN_ON_ONCE(!iod->data_len || iod->dma_dir != DMA_TO_DEVICE);
 	nvmet_pci_epf_transfer_iod_data(iod);
@@ -2531,15 +2532,18 @@ static ssize_t nvmet_pci_epf_subsysnqn_store(struct config_item *item,
 {
 	struct config_group *group = to_config_group(item);
 	struct nvmet_pci_epf *nvme_epf = to_nvme_epf(group);
+	size_t nqn_len;
 
 	/* Do not allow setting this when the function is already started. */
 	if (nvme_epf->ctrl.tctrl)
 		return -EBUSY;
 
-	if (!len)
+	nqn_len = strcspn(page, "\n");
+	if (!nqn_len || nqn_len >= sizeof(nvme_epf->subsysnqn))
 		return -EINVAL;
 
-	strscpy(nvme_epf->subsysnqn, page, len);
+	memcpy(nvme_epf->subsysnqn, page, nqn_len);
+	nvme_epf->subsysnqn[nqn_len] = '\0';
 
 	return len;
 }
