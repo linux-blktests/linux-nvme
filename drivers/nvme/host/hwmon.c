@@ -14,6 +14,7 @@ struct nvme_hwmon_data {
 	struct nvme_ctrl *ctrl;
 	struct nvme_smart_log *log;
 	struct mutex read_lock;
+	struct work_struct smart_work;
 };
 
 static int nvme_get_temp_thresh(struct nvme_ctrl *ctrl, int sensor, bool under,
@@ -223,6 +224,39 @@ static const struct hwmon_chip_info nvme_hwmon_chip_info = {
 	.info	= nvme_hwmon_info,
 };
 
+static void nvme_hwmon_smart_notify(struct work_struct *work)
+{
+	struct nvme_hwmon_data *data =
+		container_of(work, struct nvme_hwmon_data, smart_work);
+	struct nvme_ctrl *ctrl = data->ctrl;
+	int ret;
+
+	/*
+	 * The event stays latched on the controller until the SMART log
+	 * is read with RAE cleared, so re-read it here before the
+	 * completion path re-arms the Asynchronous Event Request.
+	 */
+	mutex_lock(&data->read_lock);
+	ret = nvme_hwmon_get_smart_log(data);
+	mutex_unlock(&data->read_lock);
+	if (ret)
+		return;
+
+	hwmon_notify_event(ctrl->hwmon_device, hwmon_temp,
+			   hwmon_temp_alarm, 0);
+}
+
+void nvme_hwmon_smart_event(struct nvme_ctrl *ctrl)
+{
+	struct nvme_hwmon_data *data;
+
+	if (!ctrl->hwmon_device)
+		return;
+
+	data = dev_get_drvdata(ctrl->hwmon_device);
+	queue_work(nvme_wq, &data->smart_work);
+}
+
 int nvme_hwmon_init(struct nvme_ctrl *ctrl)
 {
 	struct device *dev = ctrl->device;
@@ -242,6 +276,7 @@ int nvme_hwmon_init(struct nvme_ctrl *ctrl)
 
 	data->ctrl = ctrl;
 	mutex_init(&data->read_lock);
+	INIT_WORK(&data->smart_work, nvme_hwmon_smart_notify);
 
 	err = nvme_hwmon_get_smart_log(data);
 	if (err) {
@@ -273,6 +308,7 @@ void nvme_hwmon_exit(struct nvme_ctrl *ctrl)
 		struct nvme_hwmon_data *data =
 			dev_get_drvdata(ctrl->hwmon_device);
 
+		cancel_work_sync(&data->smart_work);
 		hwmon_device_unregister(ctrl->hwmon_device);
 		ctrl->hwmon_device = NULL;
 		kfree(data->log);
