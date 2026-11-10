@@ -454,7 +454,7 @@ struct nvme_ctrl {
 	struct nvme_dhchap_queue_context *dhchap_ctxs;
 	struct nvme_dhchap_key *host_key;
 	struct nvme_dhchap_key *ctrl_key;
-	u16 transaction;
+	atomic_t transaction;
 #endif
 	key_serial_t tls_pskid;
 
